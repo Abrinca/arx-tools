@@ -1,7 +1,7 @@
 from unittest import TestCase
 
 import os
-from opengenomebrowser_tools.reindex_assembly import reindex_assembly
+from arx_tools.reindex_assembly import reindex_assembly
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 INFILE = f'{ROOT}/test-data/prokka-bad/PROKKA_08112021.ffn'  # the assembly ASM2732v1.annotation.nucleotide.1.fasta has only one contig.

@@ -1,7 +1,7 @@
 from unittest import TestCase
 import os
 import logging
-from opengenomebrowser_tools.parse_busco import parse_busco
+from arx_tools.parse_busco import parse_busco
 
 logging.basicConfig(level=logging.INFO)
 

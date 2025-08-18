@@ -59,7 +59,7 @@ class ImportSettings:
 
     def __init__(self, settings: Union[dict, str] = None):
         if settings is None:
-            settings = os.environ.get('OGB_IMPORT_SETTINGS', None)
+            settings = os.environ.get('ARX_IMPORT_SETTINGS', None)
 
         if type(settings) is dict:
             pass
@@ -73,7 +73,7 @@ class ImportSettings:
         self.settings['manual_paths'] = self.default_settings['manual_paths'] | settings.get('manual_paths', {})
 
         assert set(self.settings.keys()) == set(self.default_settings.keys()), \
-            f'OGB_IMPORT_SETTINGS must contain these JSON keys: {set(self.default_settings.keys())}! ' \
+            f'ARX_IMPORT_SETTINGS must contain these JSON keys: {set(self.default_settings.keys())}! ' \
             f'reality: {self.settings.keys()}'
 
         self.organism_template = self.settings['organism_template']
@@ -111,7 +111,7 @@ class ImportSettings:
         return matches
 
 
-class OgbImporter:
+class ArxImporter:
     genome_json: dict = None
     organism_json: dict = None
 
@@ -125,7 +125,7 @@ class OgbImporter:
         :param organism: Name of the organism.
         :param genome: Identifier of the genome. Must start with organism. May be identical to organism.
         :param rename: Locus tag prefixes must match the genome identifier. If this is not the case, this script can automatically rename relevant files.
-        :param import_settings: Path to import settings file. Alternatively, set the environment variable OGB_IMPORT_SETTINGS.
+        :param import_settings: Path to import settings file. Alternatively, set the environment variable ARX_IMPORT_SETTINGS.
         """
         assert folder_structure_dir is not None and os.path.isdir(
             folder_structure_dir), f'Cannot import PGAP files: {folder_structure_dir=} does not exist.'
@@ -359,7 +359,7 @@ class OgbImporter:
     def perform_import(self):
         assert self.genome_json is not None and self.organism_json is not None, \
             f'Cannot perform import yet. Metadata jsons are missing. ' \
-            f'(Run gather_metadata or set OgbImporter.genome_json and OgbImporter.organism_json manually)'
+            f'(Run gather_metadata or set ArxImporter.genome_json and ArxImporter.organism_json manually)'
 
         def copy(src: str, dst: str):
             if os.path.exists(dst):
@@ -472,7 +472,7 @@ def import_genome(
     :param genome: Identifier of the genome. Must start with organism. May be identical to organism.
     :param rename: Locus tag prefixes must match the genome identifier. If this is not the case, this script can automatically rename relevant files.
     :param check_files: If true, check if locus tag prefixes match genome identifier.
-    :param import_settings: Path to import settings file. Alternatively, set the environment variable OGB_IMPORT_SETTINGS.
+    :param import_settings: Path to import settings file. Alternatively, set the environment variable ARX_IMPORT_SETTINGS.
     """
     if folder_structure_dir is None:
         assert 'FOLDER_STRUCTURE' in os.environ, f'Cannot find the folder_structure. Please set --folder_structure_dir or environment variable FOLDER_STRUCTURE'
@@ -484,18 +484,18 @@ def import_genome(
         f'Current version: {current_folder_structure_version}, expected: {__folder_structure_version__}\n' \
         f'Use the script update_folder_structure perform the upgrade!'
 
-    ogb_importer = OgbImporter(folder_structure_dir=folder_structure_dir, import_dir=import_dir, organism=organism,
+    arx_importer = ArxImporter(folder_structure_dir=folder_structure_dir, import_dir=import_dir, organism=organism,
                                genome=genome, import_settings=import_settings)
 
     if rename:
-        ogb_importer.rename_all(new_locus_tag_prefix=f'{ogb_importer.genome}_')
+        arx_importer.rename_all(new_locus_tag_prefix=f'{arx_importer.genome}_')
 
-    ogb_importer.gather_metadata()
+    arx_importer.gather_metadata()
 
     if check_files:
-        ogb_importer.check_files()
+        arx_importer.check_files()
 
-    ogb_importer.perform_import()
+    arx_importer.perform_import()
 
 
 def main():

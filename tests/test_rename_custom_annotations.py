@@ -1,7 +1,7 @@
 from unittest import TestCase
 
 import os
-from opengenomebrowser_tools.rename_custom_annotations import *
+from arx_tools.rename_custom_annotations import *
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 TMPFILE = '/tmp/renamed_custom_annotations.KG'

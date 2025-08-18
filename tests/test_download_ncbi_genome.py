@@ -2,7 +2,7 @@ from unittest import TestCase
 
 import os
 import logging
-from opengenomebrowser_tools.download_ncbi_genome import get_record_id, download_ncbi_fna_gbk_gff, rename_ncbi_files, \
+from arx_tools.download_ncbi_genome import get_record_id, download_ncbi_fna_gbk_gff, rename_ncbi_files, \
     download_ncbi_genome
 
 logging.basicConfig(level=logging.INFO)

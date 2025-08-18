@@ -9,3 +9,6 @@ esummary_assembly.dtd
 /build/
 /dist/
 /opengenomebrowser_tools.egg-info/
+/arx_tools.egg-info/
+.vscode
+.venv*

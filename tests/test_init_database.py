@@ -2,7 +2,7 @@ from unittest import TestCase
 import os
 import shutil
 import logging
-from opengenomebrowser_tools.init_folder_structure import init_folder_structure
+from arx_tools.init_folder_structure import init_folder_structure
 
 logging.basicConfig(level=logging.INFO)
 

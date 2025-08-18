@@ -1,13 +1,13 @@
-# OpenGenomeBrowser Tools
+# Arx Tools
 
-A set of scripts that helps to import genome data into the OpenGenomeBrowser folder structure.
+A set of scripts that helps to import genome data into the Arx folder structure.
 
 ## Installation
 
 This package requires at least `Python 3.9`.
 
 ```bash
-pip install opengenomebrowser-tools
+pip install arx-tools
 ```
 
 ## Help function
@@ -20,7 +20,7 @@ import_genome --help
 
 ## `init_folder_structure`
 
-Creates a basic OpenGenomeBrowser folders structure.
+Creates a basic Arx folders structure.
 
 <details>
   <summary>More details:</summary>
@@ -64,7 +64,7 @@ init_folder_structure  # or --folder_structure_dir=/path/to/folder_structure
 
 ## `import_genome`
 
-Import genome-associated files into OpenGenomeBrowser folder structure, automatically generate metadata files.
+Import genome-associated files into Arx folder structure, automatically generate metadata files.
 
 <details>
   <summary>More details:</summary>
@@ -140,7 +140,7 @@ Optional files:
 
 - `.faa`: protein sequences (FASTA). If non-existent, it will automatically be generated from the `.gbk` file
 - `.ffn`: nucleotides file (FASTA). If non-existent, it will automatically be generated from the `.gbk` file
-- `.sqn`: required for submission to GenBank, not really used by OpenGenomeBrowser
+- `.sqn`: required for submission to GenBank, not really used by Arx
 - `.emapper.annotations`: Eggnog annotation file
 - `.XX`: custom annotation file (e.g. `EC`, `.GO`, etc.; any files with a suffix of two upper case letters are detected as custom annotations)
 - `_busco.txt`: BUSCO output file, content will be added to `genome.json`
@@ -180,10 +180,10 @@ folder_structure
 ### Modify where files are moved to
 
 It is possible to change where files end up in the folder structure. The behaviour is determined by a config file in json format that can be specified
-with the --import_settings parameter or the `OGB_IMPORT_SETTINGS` environment variable.
+with the --import_settings parameter or the `ARX_IMPORT_SETTINGS` environment variable.
 
 ```shell
-export OGB_IMPORT_SETTINGS=/path/to/import_config.json
+export ARX_IMPORT_SETTINGS=/path/to/import_config.json
 ```
 
 <details>
@@ -386,7 +386,7 @@ outdir
 └── FAM3257.gff
 ```
 
-The next step might be to import these genomes into the OpenGenomeBrowser folder structure like this:
+The next step might be to import these genomes into the Arx folder structure like this:
 
 ```shell
 import_genome --import_dir=/path/to/outdir --organism FAM3257 --genome FAM3257
@@ -424,7 +424,7 @@ Result:
 
 ## `import_orthofinder`
 
-The output of OrthoFinder needs to be processed for OpenGenomeBrowser. This script creates two files:
+The output of OrthoFinder needs to be processed for Arx. This script creates two files:
 
 - `annotation-descriptions/OL.tsv`: maps orthologs to the most common gene name, i.e. `OG0000005` -> `MFS transporter`
 - `orthologs/orthologs.tsv`: maps orthologs to genes, i.e. `OG0000005` -> `STRAIN1_000069, STRAIN2_000128, STRAIN2_000137`
@@ -439,17 +439,17 @@ export FOLDER_STRUCTURE=/path/to/folder_structure
 import_orthofinder --which hog  # 'hog' for hierarchical orthogroups and 'og' for regular orthogroups
 ```
 
-Once these files exist, run the following command from within the OpenGenomeBrowser docker container:
+Once these files exist, run the following command from within the Arx docker container:
 
 ```shell
-python db_setup/manage_ogb.py import-orthologs
+python manage_arx.py import-orthologs
 ```
 
 </details>
 
 ## `update_folder_structure`
 
-From time to time, changes are made to the OpenGenomeBrowser folder structure. The current version of your folder structure is denoted
+From time to time, changes are made to the Arx folder structure. The current version of your folder structure is denoted
 in `version.json`. Use this script to upgrade to a new version.
 
 <details>

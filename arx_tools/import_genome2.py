@@ -51,7 +51,7 @@ class ImportSettings2:
 
     def __init__(self, settings: Union[dict, str] = None):
         if settings is None:
-            settings = os.environ.get('OGB_IMPORT_SETTINGS', None)
+            settings = os.environ.get('ARX_IMPORT_SETTINGS', None)
 
         if type(settings) is dict:
             pass
@@ -65,7 +65,7 @@ class ImportSettings2:
         self.settings['file_finder'] = self.default_settings['file_finder'] | settings.get('file_finder', {})
 
         assert set(self.settings.keys()) == set(self.default_settings.keys()), \
-            f'OGB_IMPORT_SETTINGS must contain these JSON keys: {set(self.default_settings.keys())}! ' \
+            f'ARX_IMPORT_SETTINGS must contain these JSON keys: {set(self.default_settings.keys())}! ' \
             f'reality: {self.settings.keys()}'
 
     @staticmethod
@@ -396,7 +396,7 @@ def import_genome2(
     :param genome: Identifier of the genome. Must start with organism. May be identical to organism.
     :param rename: Locus tag prefixes must match the genome identifier. If this is not the case, this script can automatically rename relevant files.
     :param check_files: If true, check if locus tag prefixes match genome identifier.
-    :param import_settings: Path to import settings file. Alternatively, set the environment variable OGB_IMPORT_SETTINGS.
+    :param import_settings: Path to import settings file. Alternatively, set the environment variable ARX_IMPORT_SETTINGS.
     :param pause: Wait after import_actions / before file_finder
     """
     import_dir = os.path.abspath(import_dir)

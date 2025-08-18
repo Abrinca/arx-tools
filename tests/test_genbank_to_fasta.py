@@ -2,7 +2,7 @@ from unittest import TestCase
 
 import os
 import logging
-from opengenomebrowser_tools.genbank_to_fasta import GenBankToFasta
+from arx_tools.genbank_to_fasta import GenBankToFasta
 
 logging.basicConfig(level=logging.INFO)
 

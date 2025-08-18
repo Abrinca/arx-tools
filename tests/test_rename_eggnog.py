@@ -1,7 +1,7 @@
 from unittest import TestCase
 
 import os
-from opengenomebrowser_tools.rename_eggnog import *
+from arx_tools.rename_eggnog import *
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 TMPFILE = '/tmp/renamed_eggnog.eggnog'

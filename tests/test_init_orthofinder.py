@@ -2,7 +2,7 @@ from unittest import TestCase
 import os
 import shutil
 import logging
-from opengenomebrowser_tools.init_orthofinder import init_orthofinder
+from arx_tools.init_orthofinder import init_orthofinder
 
 logging.basicConfig(level=logging.INFO)
 

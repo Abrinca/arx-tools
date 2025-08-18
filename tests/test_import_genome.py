@@ -3,7 +3,7 @@ from unittest import TestCase
 
 import os
 import logging
-from opengenomebrowser_tools.import_genome import import_genome, ImportSettings
+from arx_tools.import_genome import import_genome, ImportSettings
 
 logging.basicConfig(level=logging.INFO)
 

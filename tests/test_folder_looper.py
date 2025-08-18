@@ -1,6 +1,6 @@
 import os
 from unittest import TestCase
-from opengenomebrowser_tools.folder_looper import loop, FolderLooper
+from arx_tools.folder_looper import loop, FolderLooper
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 FOLDER_STRUCTURE = f'{ROOT}/folder_structure'

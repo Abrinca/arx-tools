@@ -1,1 +1,1 @@
-recursive-include opengenomebrowser_tools *.json
+recursive-include arx_tools *.json

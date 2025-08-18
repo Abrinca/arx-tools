@@ -1,6 +1,6 @@
 from unittest import TestCase
 
-from opengenomebrowser_tools.utils import *
+from arx_tools.utils import *
 
 logging.basicConfig(level=logging.INFO)
 

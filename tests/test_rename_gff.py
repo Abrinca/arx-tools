@@ -1,7 +1,7 @@
 from unittest import TestCase
 
 import os
-from opengenomebrowser_tools.rename_gff import GffFile
+from arx_tools.rename_gff import GffFile
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 TMPFILE = '/tmp/renamed_gff.gff'

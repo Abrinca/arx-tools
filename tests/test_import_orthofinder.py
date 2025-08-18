@@ -1,6 +1,6 @@
 import os
 from unittest import TestCase
-from opengenomebrowser_tools.import_orthofinder import import_orthofinder
+from arx_tools.import_orthofinder import import_orthofinder
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 FOLDER_STRUCTURE = f'{ROOT}/folder_structure'

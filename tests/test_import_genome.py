@@ -3,7 +3,7 @@ from unittest import TestCase
 
 import os
 import logging
-from arx_tools.import_genome import import_genome, ImportSettings
+from arx_tools.import_genome import import_genome
 
 logging.basicConfig(level=logging.INFO)
 
@@ -19,42 +19,15 @@ assert os.path.isdir(FOLDER_STRUCTURE)
 
 
 def clean_up():
-    if os.path.isdir(ORAGNISMS_DIR):
-        shutil.rmtree(ORAGNISMS_DIR)
-    os.makedirs(ORAGNISMS_DIR)
+    os.makedirs(ORAGNISMS_DIR, exist_ok=True)
+    for entry in os.listdir(ORAGNISMS_DIR):
+        shutil.rmtree(os.path.join(ORAGNISMS_DIR, entry))
     for f in TO_DELETE:
         if os.path.isfile(f):
             os.remove(f)
 
 
 class Test(TestCase):
-    def test_import_settings(self):
-        import_settings = ImportSettings()
-        res = import_settings.get_path(original_path='bla.faa', genome='XXX', organism='YYY')
-        self.assertEqual(res, 'XXX.faa')
-
-        res = import_settings.get_path(original_path='bla.yolo', genome='XXX', organism='YYY')
-        self.assertEqual(res, 'rest/bla.yolo')
-
-    def test_import_settings_custom(self):
-        import_settings = ImportSettings(dict(
-            organism_template=None,
-            genome_template=None,
-            path_transformer={
-                '^.*\.abc$': '{organism}.{genome}.{suffix}',
-                '^.*\.ignore$': None,
-            }
-        ))
-
-        res = import_settings.get_path(original_path='bla.abc', genome='XXX', organism='YYY')
-        self.assertEqual(res, 'YYY.XXX.abc')
-
-        res = import_settings.get_path(original_path='bla.ignore', genome='XXX', organism='YYY')
-        self.assertEqual(res, None)
-
-        with self.assertRaises(AssertionError):
-            res = import_settings.get_path(original_path='bla.yolo', genome='XXX', organism='YYY')
-
     def test_import_pgap_good(self):
         import_genome(folder_structure_dir=FOLDER_STRUCTURE, import_dir=f'{ROOT}/test-data/pgap-good')
 
@@ -95,22 +68,50 @@ class Test(TestCase):
     def test_import_advanced_config(self):
         import_genome(
             folder_structure_dir=FOLDER_STRUCTURE, import_dir=f'{ROOT}/test-data/prokka-good',
-            import_settings=f'{ROOT}/test-data/alternative-config.json',
+            import_settings=f'{ROOT}/test-data/alternative-config2.json',
             organism='STRAIN', genome='STRAIN.1'
         )
 
     def test_import_simone_config(self):
         import_genome(
             folder_structure_dir=FOLDER_STRUCTURE, import_dir=f'{ROOT}/test-data/simone',
-            import_settings=f'{ROOT}/test-data/import-config-agroscope.json',
+            import_settings=f'{ROOT}/test-data/import-config-agroscope2.json',
             organism='FAM24234', genome='FAM24234-i1-2.1'
+        )
+
+    def test_import_hatice_config(self):
+        import_genome(
+            folder_structure_dir=FOLDER_STRUCTURE, import_dir=f'{ROOT}/test-data/Dog002_mouth-p1-1.1',
+            import_settings=f'{ROOT}/test-data/import-config-hatice-staph.json',
+            organism='Dog002_mouth', genome='Dog002_mouth-p1-1.1'
+        )
+
+    def test_import_hatice_ncbi(self):
+        import_genome(
+            folder_structure_dir=FOLDER_STRUCTURE, import_dir=f'{ROOT}/test-data/117',
+            import_settings=f'{ROOT}/test-data/import-config-hatice-staph-ncbi.json',
+            organism='117', genome='117'
         )
 
     def test_import_subdir_config(self):
         import_genome(
             folder_structure_dir=FOLDER_STRUCTURE, import_dir=f'{ROOT}/test-data/subdir',
-            import_settings=f'{ROOT}/test-data/import-config-subdir.json',
+            import_settings=f'{ROOT}/test-data/import-config-subdir2.json',
             organism='FAM24234', genome='FAM24234-i1-2.1'
+        )
+
+    def test_DSM22211(self):
+        import_genome(
+            folder_structure_dir=FOLDER_STRUCTURE, import_dir=f'{ROOT}/test-data/DSM22211-i1-1.1',
+            import_settings=f'{ROOT}/test-data/import-config-DSM22211-2.json',
+            organism='DSM22211', genome='DSM22211-i1-1.1'
+        )
+
+    def test_bakta(self):
+        import_genome(
+            folder_structure_dir=FOLDER_STRUCTURE, import_dir=f'{ROOT}/test-data/bakta',
+            import_settings=f'{ROOT}/test-data/import-settings-bakta.json',
+            organism='thomas', genome='thomas-1.1'
         )
 
     def test_import_ncbi(self):

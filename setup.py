@@ -35,7 +35,6 @@ setup(
         'console_scripts': [
             'init_folder_structure=arx_tools.init_folder_structure:main',
             'import_genome=arx_tools.import_genome:main',
-            'import_genome2=arx_tools.import_genome2:main',
             'download_ncbi_genome=arx_tools.download_ncbi_genome:main',
             'genbank_to_fasta=arx_tools.genbank_to_fasta:main',
             'reindex_assembly=arx_tools.reindex_assembly:main',

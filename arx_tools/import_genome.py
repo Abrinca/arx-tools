@@ -1,17 +1,16 @@
 import logging
 import os
-import re
 import json
 import yaml
 import shutil
 import tempfile
 from glob import glob
 from textwrap import shorten
-from typing import Union, Optional
+from typing import Union
 from schema import SchemaError
 
 from . import __folder_structure_version__
-from .utils import entrez_organism_to_taxid, GenomeFile, merge_json, get_folder_structure_version
+from .utils import entrez_organism_to_taxid, GenomeFile, merge_json, get_folder_structure_version, WorkingDirectory
 from .rename_genbank import GenBankFile
 from .rename_gff import GffFile
 from .rename_fasta import FastaFile
@@ -22,38 +21,31 @@ from .metadata_schemas import \
     organism_json_schema, genome_json_dummy, genome_json_schema, organism_json_dummy
 
 
+class ImportException(Exception):
+    pass
+
+
 class ImportSettings:
-    settings: dict[re.Pattern:str]
+    settings: dict[str:str]
     default_settings = {
         'organism_template': {},
         'genome_template': {},
-        'manual_paths': {
-            'eggnog': r'.*\.emapper\.annotations',
-            'fna': r'.*\.fna',
-            'faa': r'.*\.faa',
-            'gbk': r'.*\.gbk',
-            'gff': r'.*\.gff',
-            'sqn': r'.*\.sqn',
-            'ffn': r'.*\.ffn',
-            'genome.md': r'genome\.md',
-            'organism.md': r'organism\.md',
-            'yaml': r'.*\.yaml',
-            'busco': r'.*_busco\.txt',
-        },
-        'path_transformer': {
-            r'.*\.fna': '{genome}.{suffix}',
-            r'.*\.faa': '{genome}.{suffix}',
-            r'.*\.gbk': '{genome}.{suffix}',
-            r'.*\.gff': '{genome}.{suffix}',
-            r'.*\.sqn': '{genome}.{suffix}',
-            r'.*\.ffn': '{genome}.{suffix}',
-            r'.*\.emapper.annotations': '{genome}.eggnog',
-            r'.*\.[A-Z]{2}': '{genome}.{suffix}',
-            r'genome\.md': 'genome.md',
-            r'organism\.md': '../../organism.md',
-            r'genome\.json': None,  # do not copy this file
-            r'organism\.json': None,  # do not copy this file
-            r'.*': 'rest/{original_path}',
+        'import_actions': [
+            {'type': 'copy', 'from': '*', 'to': '{original_path}', 'expected': True},
+        ],
+        'file_finder': {
+            'fna': {'glob': '*.fna', 'expected': 1},
+            'gbk': {'glob': '*.gbk', 'expected': 1},
+            'gff': {'glob': '*.gff', 'expected': 1},
+            'faa': {'glob': '*.faa', 'expected': False},
+            'sqn': {'glob': '*.sqn', 'expected': False},
+            'ffn': {'glob': '*.ffn', 'expected': False},
+            'eggnog': {'glob': '*.emapper.annotations', 'expected': False},
+            'yaml': {'glob': '*.yaml', 'expected': False},
+            'busco': {'glob': '*_busco.txt', 'expected': False},
+            'custom_annotations': [
+                {'glob': f'*.{anno_type}', 'anno_type': anno_type, 'expected': False}
+                for anno_type in ('GC', 'GP', 'EP', 'ED', 'EO', 'EC', 'KG', 'KR', 'GO', 'SL', 'OL')]
         }
     }
 
@@ -70,388 +62,319 @@ class ImportSettings:
             settings = {}
 
         self.settings = self.default_settings | settings  # PEP-584: dict union: overwrite defaults with new settings
-        self.settings['manual_paths'] = self.default_settings['manual_paths'] | settings.get('manual_paths', {})
+        self.settings['file_finder'] = self.default_settings['file_finder'] | settings.get('file_finder', {})
 
         assert set(self.settings.keys()) == set(self.default_settings.keys()), \
             f'ARX_IMPORT_SETTINGS must contain these JSON keys: {set(self.default_settings.keys())}! ' \
             f'reality: {self.settings.keys()}'
 
-        self.organism_template = self.settings['organism_template']
-        self.genome_template = self.settings['genome_template']
-        self.path_transformer: {re.Pattern: str} = {re.compile(pattern=p): n for p, n in
-                                                    self.settings['path_transformer'].items()}
+    @staticmethod
+    def _format_path(path: str, genome: str, organism: str, src: str = None) -> str:
+        if src is None:
+            return path.format(
+                genome=genome,
+                organism=organism,
+                assembly=genome.rsplit('.', 1)[0]
+            )
+        else:
+            basename = os.path.basename(src)
+            return path.format(
+                original_path=src,
+                basename=basename,
+                suffix=basename.rsplit('.', 1)[-1] if '.' in basename else '',
+                genome=genome,
+                organism=organism,
+                assembly=genome.rsplit('.', 1)[0]
+            )
 
-        self.file_finder: {str: re.Pattern} = {n: re.compile(pattern=p) for n, p in
-                                               self.settings['manual_paths'].items()}
+    @staticmethod
+    def _copy(src: str, dst: str):
+        if os.path.exists(dst):
+            logging.warning(f'Overwriting: {src} -> {dst}')
+        copy_fn = shutil.copy2 if os.path.isfile(src) else shutil.copytree
+        os.makedirs(os.path.dirname(dst), exist_ok=True)  # create parent dir if nonexistent
+        copy_fn(src=src, dst=dst)
 
-    def get_path(self, original_path: str, genome: str, organism: str) -> Optional[str]:
-        pattern: re.Pattern
-        for pattern, new_path in self.path_transformer.items():
-            if pattern.fullmatch(string=original_path) is not None:
-                if new_path is None:
-                    return None  # do not copy this file
-                return new_path.format(
-                    original_path=original_path,
-                    suffix=original_path.rsplit('.', 1)[-1],
-                    genome=genome,
-                    organism=organism,
-                    assembly=genome.rsplit('.', 1)[0]
-                )
-        raise AssertionError(
-            f'File/folder {original_path} does not match any regex specified in import_settings: {self.settings}')
+    @classmethod
+    def copy(cls, source_dir: str, target_dir: str, genome: str, organism: str, action: dict):
+        from_ = action['from']
+        to = action['to']
+        expected = action.get('expected', True)
 
-    def find_files(self, files, type: str, root_dir: str) -> [str]:
-        pattern = self.file_finder[type]
-        matches = [f for f in files if pattern.fullmatch(string=f) is not None]
-        if not matches:
-            _old_wd = os.getcwd()
-            os.chdir(root_dir)
-            matches = glob(pattern.pattern)
-            os.chdir(_old_wd)
-        return matches
+        with WorkingDirectory(source_dir):
+            files = glob(from_)
+            cls.check_expected(files, expected, from_)
+            for src in files:
+                if 'calls' in src:
+                    print('wait')
+                rel_dst = cls._format_path(to, genome, organism, src)
+                dst = os.path.join(target_dir, rel_dst)
+                if os.path.isdir(dst):
+                    logging.warning(f'Overwriting directory: {src} >>{action}>> {rel_dst}')
+                    shutil.rmtree(dst)
+                elif os.path.isfile(dst):
+                    logging.warning(f'Overwriting file: {src} >>{action}>> {rel_dst}')
+                    os.remove(dst)
+                else:
+                    logging.info(f'{src} >>{action}>> {rel_dst}')
+                cls._copy(src=src, dst=dst)
+
+    @classmethod
+    def link(cls, target_dir: str, genome: str, organism: str, action: dict):
+        from_ = cls._format_path(action['from'], genome, organism)
+        to = cls._format_path(action['to'], genome, organism)
+        expected = action.get('expected', True)
+        assert type(expected) is bool, f'Failed to execute link action: "expected" must be true or false! {action=}'
+
+        dst = os.path.join(target_dir, to)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        os.symlink(src=from_, dst=dst)
+        if expected:
+            assert os.path.exists(dst), f'Failed to execute link action: destination {dst=} does not exist! {action=}'
+
+    def execute_actions(self, source_dir: str, target_dir: str, genome: str, organism: str) -> None:
+        for action in self.settings['import_actions']:
+            action_type = action['type']
+            if action_type == 'copy':
+                self.copy(source_dir, target_dir, genome, organism, action)
+            elif action_type == 'link':
+                self.link(target_dir, genome, organism, action)
+            else:
+                raise AssertionError(f'Could not execute action: type must be "copy". {action=}')
+
+    @staticmethod
+    def check_expected(files: [str], expected: Union[None, bool, int], glob_pattern: str):
+        if type(expected) is int:
+            if len(files) != expected:
+                raise ImportException(f'Error: {files=} glob={glob_pattern}\n'
+                                      f'Found {len(files)}, not {expected} files!')
+        elif expected is True:
+            if len(files) == 0:
+                raise ImportException(f'Error: Found no files using glob={glob_pattern}!')
+        else:
+            if expected is not False:
+                raise ImportException(f'Error: config is bad. type must be integer or boolean. '
+                                      f'{expected=} {type(expected)=}')
+
+    def find_files(self, type_: str, root_dir: str) -> [str]:
+        settings = self.settings['file_finder'][type_]
+        glob_pattern = settings['glob']
+        expected = settings.get('expected', False)
+
+        with WorkingDirectory(root_dir):
+            files = glob(glob_pattern)
+
+        logging.info(f'Found {len(files)} files of type={type_} using glob={glob_pattern}')
+        self.check_expected(files, expected, glob_pattern)
+        return files
+
+    def find_file(self, type_: str, root_dir: str, as_class=None, expected: bool = True) \
+            -> Union[str, GenomeFile, None]:
+        files = self.find_files(type_, root_dir)
+
+        if len(files) == 1:
+            if as_class is None:
+                return files[0]
+            else:
+                with WorkingDirectory(root_dir):
+                    return as_class(files[0])
+        else:
+            if expected:
+                raise AssertionError(f'Error: found {len(files)} files of {type_=}: {files=}')
+            else:
+                f'Found no {type_} files.'
+                return None
+
+    def find_custom_annotations(self, root_dir: str):
+        annotations = []
+
+        eggnog_file = self.find_file(type_='eggnog', root_dir=root_dir, as_class=EggnogFile, expected=False)
+        if eggnog_file:
+            annotations.append(eggnog_file)
+
+        with WorkingDirectory(root_dir):
+            for custom_annotation in self.settings['file_finder']['custom_annotations']:
+                glob_pattern = custom_annotation['glob']
+                files = glob(glob_pattern)
+                expected = custom_annotation.get('expected', False)
+                assert len(files) < 2, f'Found multiple {custom_annotation["anno_type"]}: {files=}'
+
+                if files:
+                    annotations.append(CustomAnnotationFile(
+                        file=files[0],
+                        custom_annotation_type=custom_annotation['anno_type'])
+                    )
+                if not files and expected:
+                    raise ImportException(f'Error: Found no custom-file using glob={glob_pattern}!')
+        return annotations
 
 
-class ArxImporter:
-    genome_json: dict = None
-    organism_json: dict = None
+def autodetect_organism_genome(root_dir: str) -> (str, str):
+    with WorkingDirectory(root_dir):
+        gbks = glob('*.gbk')
+        for gbk in gbks:
+            try:
+                strain, locus_tag_prefix = GenBankFile(file=gbk).detect_strain_locus_tag_prefix()
+                organism, genome = strain, locus_tag_prefix.rstrip('_')
+                logging.info(f'autodetected from gbk: {organism=} {genome=}')
+                return organism, genome
+            except Exception:
+                pass
+    raise AssertionError(f'Failed to automatically detect organism and genome name in {gbks=}. '
+                         f'Please specify them manually.')
 
-    def __init__(self, folder_structure_dir: str, import_dir: str, organism: str = None, genome: str = None,
-                 import_settings: str = None):
-        """
-        Easily import files into the OpenGenomeBrowser folder structure.
 
-        :param import_dir: Folder with files to import. Required: [.fna, .faa, .gbk, .gff] Optional: [.ffn, .sqn, custom-annotation-files]
-        :param folder_structure_dir: Path to the root of the OpenGenomeBrowser folder structure. (Must contain 'organisms' folder.)
-        :param organism: Name of the organism.
-        :param genome: Identifier of the genome. Must start with organism. May be identical to organism.
-        :param rename: Locus tag prefixes must match the genome identifier. If this is not the case, this script can automatically rename relevant files.
-        :param import_settings: Path to import settings file. Alternatively, set the environment variable ARX_IMPORT_SETTINGS.
-        """
-        assert folder_structure_dir is not None and os.path.isdir(
-            folder_structure_dir), f'Cannot import PGAP files: {folder_structure_dir=} does not exist.'
-        assert os.path.isdir(import_dir), f'Cannot import PGAP files: {import_dir=} does not exist.'
+def rename_all(root_dir: str, gbk: GenBankFile, files: [GenomeFile], new_prefix: str, old_prefix: str = None):
+    if not old_prefix:
+        old_prefix = gbk.detect_locus_tag_prefix()
 
-        self.import_settings = ImportSettings(import_settings)
+    assert new_prefix != old_prefix, \
+        f'old and new locus_tag_prefix are the same! {old_prefix=} {new_prefix=}'
 
-        self.tempdir = tempfile.TemporaryDirectory()
+    kwargs = dict(new_locus_tag_prefix=new_prefix, old_locus_tag_prefix=old_prefix, update_path=False)
 
-        self.import_dir = import_dir
-        self.folder_structure_dir = folder_structure_dir
-        self.organisms_dir = f'{folder_structure_dir}/organisms'
-        assert os.path.isdir(
-            self.organisms_dir), f'{folder_structure_dir=} does not point to a directory that contains an organisms-folder!'
+    with tempfile.TemporaryDirectory() as rename_tempdir, WorkingDirectory(root_dir):
+        for file in files:
+            temp_file = os.path.join(rename_tempdir, 'tempfile')
+            file.rename(out=temp_file, **kwargs)
+            os.remove(file.path)
+            os.rename(src=temp_file, dst=file.path)
 
-        files = os.listdir(import_dir)
-        self.fna = self.find_file(files, 'fna', FastaFile)  # assembly
-        self.gbk = self.find_file(files, 'gbk', GenBankFile)  # genbank
-        self.ffn = self.find_or_create_ffn(files=files)  # nucleic acid sequences
-        self.faa = self.find_or_create_faa(files=files)  # protein
-        self.gff = self.find_file(files, 'gff', GffFile)  # general feature format
-        self.sqn = self.find_file(files, 'sqn', GenomeFile, raise_error=False)  # GenBank submission file
-        self.custom_annotations = self.find_custom_annotations(files)  # custom annotation files / eggnog files
 
-        self.genome_md = self.get_genome_file(files, 'genome.md', GenomeFile, raise_error=False)
-        self.organism_md = self.get_genome_file(files, 'organism.md', GenomeFile, raise_error=False)
+def load_yaml_metadata(submol_yaml: str) -> (dict, dict):
+    organism_yaml, genome_yaml = {}, {}
+    with open(submol_yaml) as f:
+        submol_yaml = yaml.safe_load(f)
 
-        self.rest_files = files
+    if 'organism' in submol_yaml and 'genus_species' in submol_yaml['organism']:
+        organism_yaml['taxid'] = entrez_organism_to_taxid(submol_yaml['organism']['genus_species'])
 
-        auto_organism, auto_genome = self.detect_organism_genome()
-        self.organism = organism if organism else auto_organism
-        self.genome = genome if genome else auto_genome
-        assert self.genome.startswith(
-            self.organism), f'The genome identifier must start with the organism name! {self.genome=} {self.organism=}'
+    if 'biosample' in submol_yaml:
+        genome_yaml['biosample_accession'] = submol_yaml['biosample']
+    if 'bioproject' in submol_yaml:
+        genome_yaml['bioproject_accession'] = submol_yaml['bioproject']
 
-        self.target_dir = f'{self.organisms_dir}/{self.organism}/genomes/{self.genome}'
-
-        assert not os.path.isdir(
-            self.target_dir), f'Could not import {self.organism}:{self.genome}: {self.target_dir=} already exists!'
-
-    def __repr__(self):
-        return f'{self.organism}::{self.genome}'
-
-    def _append_new_path_to_file(self, file: GenomeFile) -> Optional[str]:
-        if file is None:
-            return None
-        new_path = self.get_new_path(original_path=file.original_path)
-        file.new_path = new_path
-        file.target_path = os.path.join(self.target_dir, file.new_path)
-        return new_path
-
-    def get_new_path(self, original_path: str) -> str:
-        return self.import_settings.get_path(original_path=original_path, genome=self.genome, organism=self.organism)
-
-    def add_files_to_json(self, genome_json: dict) -> dict:
-        genome_json['cds_tool_faa_file'] = self._append_new_path_to_file(self.faa)
-        genome_json['cds_tool_ffn_file'] = self._append_new_path_to_file(self.ffn)
-        genome_json['cds_tool_gbk_file'] = self._append_new_path_to_file(self.gbk)
-        genome_json['cds_tool_gff_file'] = self._append_new_path_to_file(self.gff)
-        genome_json['cds_tool_sqn_file'] = self._append_new_path_to_file(self.sqn)
-        genome_json['assembly_fasta_file'] = self._append_new_path_to_file(self.fna)
-        genome_json['custom_annotations'] = [
-            {'date': ca.date_str(), 'file': self._append_new_path_to_file(ca), 'type': ca.custom_annotation_type}
-            for ca in self.custom_annotations
+    if 'publications' in submol_yaml and len(submol_yaml['publications']):
+        genome_yaml['literature_references'] = [{
+            'url': f"https://pubmed.ncbi.nlm.nih.gov/{p['publication']['pmid']}/",
+            'name': shorten(p['publication']['title'], width=30)}
+            for p in submol_yaml['publications']
         ]
-        return genome_json
 
-    def load_yaml_metadata(self) -> (dict, dict):
-        organism_yaml, genome_yaml = {}, {}
-        try:
-            submol_yaml = self.find_file(files=self.rest_files, key='yaml', file_class=GenomeFile, remove=False)
-        except FileNotFoundError:
-            return organism_yaml, genome_yaml
-        with open(submol_yaml.path) as f:
-            submol_yaml = yaml.safe_load(f)
+    return organism_yaml, genome_yaml
 
-        if 'organism' in submol_yaml and 'genus_species' in submol_yaml['organism']:
-            organism_yaml['taxid'] = entrez_organism_to_taxid(submol_yaml['organism']['genus_species'])
 
-        if 'biosample' in submol_yaml:
-            genome_yaml['biosample_accession'] = submol_yaml['biosample']
-        if 'bioproject' in submol_yaml:
-            genome_yaml['bioproject_accession'] = submol_yaml['bioproject']
+def load_cog_metadata(custom_annotations: [GenomeFile]) -> dict:
+    for file in custom_annotations:
+        if type(file) is EggnogFile:
+            try:
+                cog = file.cog_categories()
+                return {'COG': cog}
+            except AssertionError as e:
+                logging.info(f'Failed to extract COG information from {file.path}. {str(e)}')
+                pass
+    return {}  # not eggnog file
 
-        if 'publications' in submol_yaml and len(submol_yaml['publications']):
-            genome_yaml['literature_references'] = [{
-                'url': f"https://pubmed.ncbi.nlm.nih.gov/{p['publication']['pmid']}/",
-                'name': shorten(p['publication']['title'], width=30)}
-                for p in submol_yaml['publications']
-            ]
 
-        return organism_yaml, genome_yaml
+def add_files_to_json(genome_json: dict, files: dict, custom_annotations) -> dict:
+    def get(key):
+        file = files[key]
+        return None if file is None else file.path
 
-    def load_busco_metadata(self) -> dict:
-        try:
-            busco_file = self.find_file(files=self.rest_files, key='busco', file_class=GenomeFile, remove=False)
-        except FileNotFoundError:
-            return {}
+    genome_json['cds_tool_faa_file'] = get('faa')
+    genome_json['cds_tool_ffn_file'] = get('ffn')
+    genome_json['cds_tool_gbk_file'] = get('gbk')
+    genome_json['cds_tool_gff_file'] = get('gff')
+    genome_json['cds_tool_sqn_file'] = get('sqn')
+    genome_json['assembly_fasta_file'] = get('fna')
+    genome_json['custom_annotations'] = [
+        {'date': ca.date_str(), 'file': ca.path, 'type': ca.custom_annotation_type}
+        for ca in custom_annotations
+    ]
+    return genome_json
 
-        return dict(BUSCO=parse_busco(busco_file.path))
 
-    def load_cog_metadata(self) -> dict:
-        for file in self.custom_annotations:
-            if type(file) is EggnogFile:
-                try:
-                    cog = file.cog_categories()
-                    return {'COG': cog}
-                except AssertionError as e:
-                    logging.info(f'Failed to extract COG information from {file.path}. {str(e)}')
-                    pass
-        return {}  # not eggnog file
+def gather_metadata(import_settings: ImportSettings, root_dir: str, files: [GenomeFile],
+                    custom_annotations: [GenomeFile], organism_dir: str, import_dir: str,
+                    organism: str, genome: str):
+    '''
+    Load metadata from:
+      - pgap_submol.yaml
+      - *.gbk
+      - *_busco.txt
+      - organism.json and genome.json
+    :return:
+    '''
 
-    def gather_metadata(self):
-        '''
-        Load metadata from:
-          - pgap_submol.yaml
-          - *.gbk
-          - *_busco.txt
-          - organism.json and genome.json
-        :return:
-        '''
+    # start with dummy jsons
+    organism_json = organism_json_dummy.copy()
+    genome_json = genome_json_dummy.copy()
 
-        # start with dummy jsons
-        organism_json = organism_json_dummy.copy()
-        genome_json = genome_json_dummy.copy()
+    # add import_settings
+    organism_json.update(import_settings.settings['organism_template'])
+    genome_json.update(import_settings.settings['genome_template'])
 
-        # add import_settings
-        organism_json.update(self.import_settings.organism_template)
-        genome_json.update(self.import_settings.genome_template)
-
-        # add pgap_submol.yaml
-        organism_yaml, genome_yaml = self.load_yaml_metadata()
+    # add pgap_submol.yaml
+    try:
+        organism_yaml, genome_yaml = load_yaml_metadata(import_settings.find_file(type_='yaml', root_dir=root_dir))
         organism_json.update(organism_yaml)
         genome_json.update(genome_yaml)
+    except AssertionError as e:
+        logging.info(f'Failed to load metadata from yaml: {e}')
 
-        # add *.gbk
-        organism_gbk, genome_gbk = self.gbk.metadata()
-        organism_json.update(organism_gbk)
-        genome_json.update(genome_gbk)
+    # add *.gbk
+    organism_gbk, genome_gbk = files['gbk'].metadata()
+    organism_json.update(organism_gbk)
+    genome_json.update(genome_gbk)
 
-        # add _busco.txt
-        genome_json.update(self.load_busco_metadata())
+    # add _busco.txt
+    try:
+        busco_file = import_settings.find_file(type_='busco', root_dir=root_dir)
+        genome_json['BUSCO'] = parse_busco(busco_file)
+    except AssertionError:
+        pass
 
-        # add COG from eggnog
-        genome_json.update(self.load_cog_metadata())
+    # add COG from eggnog
+    genome_json.update(load_cog_metadata(custom_annotations))
 
-        # add organism.json from folder structure
-        organism_json = merge_json(organism_json, os.path.join(self.target_dir, '../../organism.json'))
+    # add organism.json from folder structure
+    organism_json = merge_json(organism_json, os.path.join(organism_dir, 'organism.json'))
 
-        # add organism.json / genome.json from import_dir
-        organism_json = merge_json(organism_json,
-                                   self.get_file(files=self.rest_files, file='organism.json', raise_error=False))
-        genome_json = merge_json(genome_json,
-                                 self.get_file(files=self.rest_files, file='genome.json', raise_error=False))
+    # add organism.json / genome.json from import_dir
+    organism_json = merge_json(organism_json, os.path.join(import_dir, 'organism.json'))
+    genome_json = merge_json(genome_json, os.path.join(import_dir, 'genome.json'))
 
-        # add elementary identifiers
-        organism_json['name'] = self.organism
-        organism_json['representative'] = self.genome
-        genome_json['identifier'] = self.genome
+    # add elementary identifiers
+    organism_json['name'] = organism
+    organism_json['representative'] = genome
+    genome_json['identifier'] = genome
 
-        # add files
-        genome_json = self.add_files_to_json(genome_json)
+    # add files
+    genome_json = add_files_to_json(genome_json, files, custom_annotations)
 
-        # validate metadata files
-        try:
-            organism_json_schema.validate(organism_json)
-        except SchemaError as e:
-            logging.warning(f'{self}: FAILED TO CREATE A VALID organism.json! {str(e)}')
-            raise e
+    # validate metadata files
+    try:
+        organism_json_schema.validate(organism_json)
+    except SchemaError as e:
+        logging.warning(f'FAILED TO CREATE A VALID organism.json! {str(e)}')
+        raise e
 
-        try:
-            genome_json_schema.validate(genome_json)
-        except SchemaError as e:
-            logging.warning(f'{self}: FAILED TO CREATE A VALID genome.json! {str(e)}')
-            raise e
+    try:
+        genome_json_schema.validate(genome_json)
+    except SchemaError as e:
+        logging.warning(f'FAILED TO CREATE A VALID genome.json! {str(e)}')
+        raise e
 
-        self.organism_json = organism_json
-        self.genome_json = genome_json
+    return organism_json, genome_json
 
-    def detect_organism_genome(self) -> (str, str):
-        strain, locus_tag_prefix = self.gbk.detect_strain_locus_tag_prefix()
-        organism, genome = strain, locus_tag_prefix.rstrip('_')
-        logging.info(f'autodetected from gbk: {organism=} {genome=}')
-        return organism, genome
 
-    def find_or_create_ffn(self, files: [str]) -> GenomeFile:
-        try:
-            return self.find_file(files, 'ffn', FastaFile)
-        except FileNotFoundError:
-            self.ffn = self.gbk.path[:-4] + '.ffn'
-            logging.info('Creating .ffn based on .gbk...')
-            self.gbk.create_ffn(ffn=self.ffn)
-            return self.find_file(os.listdir(self.import_dir), 'ffn', FastaFile)
-
-    def find_or_create_faa(self, files: [str]) -> GenomeFile:
-        try:
-            return self.find_file(files, 'faa', FastaFile)
-        except FileNotFoundError:
-            self.faa = self.gbk.path[:-4] + '.faa'
-            logging.info('Creating .faa based on .gbk...')
-            self.gbk.create_faa(faa=self.faa)
-            return self.find_file(os.listdir(self.import_dir), 'faa', FastaFile)
-
-    def check_files(self) -> None:
-        locus_tag_prefix = f'{self.genome}_'
-        self.gbk.validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
-        self.gff.validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
-        self.faa.validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
-        self.ffn.validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
-        for ca in self.custom_annotations:
-            ca.validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
-
-    def _get_temp(self, file: str) -> str:
-        return os.path.join(self.tempdir.name, os.path.basename(file))
-
-    def rename_all(self, new_locus_tag_prefix: str, old_locus_tag_prefix: str = None):
-        if not old_locus_tag_prefix:
-            old_locus_tag_prefix = self.gbk.detect_locus_tag_prefix()
-        assert new_locus_tag_prefix != old_locus_tag_prefix, \
-            f'old and new locus_tag_prefix are the same! {old_locus_tag_prefix}, {new_locus_tag_prefix=}'
-
-        kwargs = dict(new_locus_tag_prefix=new_locus_tag_prefix, old_locus_tag_prefix=old_locus_tag_prefix)
-
-        self.gbk.rename(out=self._get_temp(self.gbk.path), **kwargs)
-        self.gff.rename(out=self._get_temp(self.gff.path), **kwargs)
-        self.faa.rename(out=self._get_temp(self.faa.path), **kwargs)
-        self.ffn.rename(out=self._get_temp(self.ffn.path), **kwargs)
-        for custom_annotation in self.custom_annotations:
-            custom_annotation.rename(out=self._get_temp(custom_annotation.path), **kwargs)
-
-    def perform_import(self):
-        assert self.genome_json is not None and self.organism_json is not None, \
-            f'Cannot perform import yet. Metadata jsons are missing. ' \
-            f'(Run gather_metadata or set ArxImporter.genome_json and ArxImporter.organism_json manually)'
-
-        def copy(src: str, dst: str):
-            if os.path.exists(dst):
-                logging.warning(f'Overwriting: {src} -> {dst}')
-            copy_fn = shutil.copy2 if os.path.isfile(src) else shutil.copytree
-            os.makedirs(os.path.dirname(dst), exist_ok=True)  # create parent dir if nonexistent
-            copy_fn(src=src, dst=dst)
-
-        os.makedirs(self.target_dir)
-
-        for file in [self.fna, self.faa, self.gbk, self.gff, self.sqn, self.ffn, *self.custom_annotations]:
-            if file:
-                logging.info(f'{file.original_path} >>copy key file>> {file.new_path}')
-                copy(src=file.path, dst=file.target_path)
-
-        for original_path in self.rest_files:
-            path = os.path.join(self.import_dir, original_path)
-            new_path = self.get_new_path(original_path=original_path)
-            if new_path is None or new_path == '':
-                logging.info(f'not copying: {original_path}')
-                continue
-            target_path = os.path.join(self.target_dir, new_path)
-            logging.info(f'{original_path} >>copy rest file>> {new_path}')
-
-            copy(src=path, dst=target_path)
-
-        with open(os.path.join(self.target_dir, 'genome.json'), 'w') as f:
-            json.dump(self.genome_json, f, indent=4)
-
-        with open(os.path.join(self.target_dir, '../../organism.json'), 'w') as f:
-            json.dump(self.organism_json, f, indent=4)
-
-    def get_file(self, files: [str], file: str,
-                 raise_error: bool = True, alternative=None, rel_path=False, remove: bool = False) -> str:
-        if file in files:
-            return file if rel_path else os.path.join(self.import_dir, file)
-        elif raise_error:
-            raise FileNotFoundError(f'Could not find {file}! {files=}')
-        else:
-            return alternative
-
-    def get_genome_file(self, files: [str], file: str, file_class: type,
-                        raise_error: bool = True, alternative=None, remove: bool = False) -> GenomeFile:
-        try:
-            file = self.get_file(files=files, file=file, raise_error=True, rel_path=True, remove=remove)
-        except FileNotFoundError as e:
-            if raise_error:
-                raise e
-            else:
-                return alternative
-        genome_file = file_class(os.path.join(self.import_dir, file), original_path=file)
-        if remove:
-            files.remove(file)
-        return genome_file
-
-    def find_file(self, files: [str], key: str, file_class: type,
-                  raise_error: bool = True, alternative=None, remove: bool = True
-                  ) -> Union[GenomeFile, FastaFile, GffFile, GenBankFile, EggnogFile, CustomAnnotationFile]:
-        matches = self.import_settings.find_files(files, type=key, root_dir=self.import_dir)
-        if len(matches) == 0:
-            if raise_error:
-                raise FileNotFoundError(f'Could not find a {key} file! {files=}')
-            else:
-                return alternative
-        if len(matches) > 1:
-            raise FileExistsError(f'Found multiple {key} files! {matches=}')
-        file = matches[0]
-        if remove and file in files:
-            files.remove(file)
-
-        genome_file = file_class(os.path.join(self.import_dir, file), original_path=file)
-        return genome_file
-
-    def find_custom_annotations(self, files: [str]) -> [
-        Union[GenomeFile, FastaFile, GffFile, GenBankFile, EggnogFile, CustomAnnotationFile]]:
-        custom_annotations = [self.get_genome_file(files, f, CustomAnnotationFile, remove=True)
-                              for f in files
-                              if re.fullmatch(pattern=r'.*\.[A-Z]{2}', string=f) is not None]
-        eggnog = self.find_file(files, 'eggnog', EggnogFile, raise_error=False)  # GenBank submission file
-        if eggnog:
-            eggnog: EggnogFile
-            logging.info(f'Found eggnog file: {eggnog}')
-            custom_annotations.append(eggnog)
-        return custom_annotations
-
-    def __del__(self):
-        if hasattr(self, 'tempdir'):
-            logging.info(f'Deleting {self.tempdir.name}')
-            try:
-                self.tempdir.cleanup()
-            except Exception as e:
-                logging.info(f'Could not delete {self.tempdir.name} {str(e)=}')
+def check_files_(locus_tag_prefix, files: dict, custom_annotations: [GenomeFile]) -> None:
+    files['gbk'].validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
+    files['gff'].validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
+    files['faa'].validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
+    files['ffn'].validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
+    for ca in custom_annotations:
+        ca.validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
 
 
 def import_genome(
@@ -461,7 +384,8 @@ def import_genome(
         genome: str = None,
         rename: bool = False,
         check_files: bool = True,
-        import_settings: str = None
+        import_settings: str = None,
+        pause: bool = False
 ):
     """
     Easily import files into OpenGenomeBrowser folder structure.
@@ -473,10 +397,20 @@ def import_genome(
     :param rename: Locus tag prefixes must match the genome identifier. If this is not the case, this script can automatically rename relevant files.
     :param check_files: If true, check if locus tag prefixes match genome identifier.
     :param import_settings: Path to import settings file. Alternatively, set the environment variable ARX_IMPORT_SETTINGS.
+    :param pause: Wait after import_actions / before file_finder
     """
+    import_dir = os.path.abspath(import_dir)
+
     if folder_structure_dir is None:
-        assert 'FOLDER_STRUCTURE' in os.environ, f'Cannot find the folder_structure. Please set --folder_structure_dir or environment variable FOLDER_STRUCTURE'
+        assert 'FOLDER_STRUCTURE' in os.environ, \
+            f'Cannot find the folder_structure. ' \
+            f'Please set --folder_structure_dir or environment variable FOLDER_STRUCTURE'
         folder_structure_dir = os.environ['FOLDER_STRUCTURE']
+
+    folder_structure_dir = os.path.abspath(folder_structure_dir)
+
+    organisms_dir = f'{folder_structure_dir}/organisms'
+    assert os.path.isdir(organisms_dir), f'Cannot import files: {organisms_dir=} does not exist.'
 
     current_folder_structure_version = get_folder_structure_version(folder_structure_dir)
     assert current_folder_structure_version == __folder_structure_version__, \
@@ -484,18 +418,88 @@ def import_genome(
         f'Current version: {current_folder_structure_version}, expected: {__folder_structure_version__}\n' \
         f'Use the script update_folder_structure perform the upgrade!'
 
-    arx_importer = ArxImporter(folder_structure_dir=folder_structure_dir, import_dir=import_dir, organism=organism,
-                               genome=genome, import_settings=import_settings)
+    assert os.path.isdir(import_dir), f'Cannot import files: {import_dir=} does not exist.'
+
+    import_settings = ImportSettings(import_settings)
+
+    if organism is None or genome is None:
+        _organism, _genome = autodetect_organism_genome(import_dir)
+        if organism is None:
+            organism = _organism
+        if genome is None:
+            genome = _genome
+
+    # genome names can consist of integers -.-
+    organism, genome = str(organism), str(genome)
+
+    organism_dir = os.path.join(organisms_dir, organism)
+    genome_dir = os.path.join(organism_dir, 'genomes', genome)
+    assert not os.path.exists(genome_dir), f'Could not import {organism}:{genome}: {genome_dir=} already exists!'
+
+    work_dir = tempfile.TemporaryDirectory()
+    _work_dir = os.getcwd()
+    os.chdir(work_dir.name)
+
+    import_settings.execute_actions(import_dir, work_dir.name, genome, organism)
+
+    if pause:
+        print(f'Files are prepared here: {work_dir.name} Press enter to continue with import. Press Ctrl+C to abort.')
+        input()
+
+    fna: FastaFile = import_settings.find_file('fna', root_dir=work_dir.name, as_class=FastaFile)  # assembly
+    gbk: GenBankFile = import_settings.find_file('gbk', root_dir=work_dir.name, as_class=GenBankFile)  # genbank
+
+    ffn = import_settings.find_file('ffn', root_dir=work_dir.name, as_class=FastaFile,
+                                    expected=False)  # nucleic acid sequences
+    if ffn is None:
+        logging.info(f'Failed to auto-detect ffn.')
+        ffn = gbk.path[:-4] + '.ffn'
+
+        gbk.create_ffn(ffn=f'{work_dir.name}/{ffn}')
+        ffn = FastaFile(ffn)  # nucleic acid sequences
+
+    faa = import_settings.find_file('faa', root_dir=work_dir.name, as_class=FastaFile, expected=False)  # protein
+    if faa is None:
+        logging.info(f'Failed to auto-detect faa.')
+        faa = gbk.path[:-4] + '.faa'
+        gbk.create_faa(faa=f'{work_dir.name}/{faa}')
+        faa = FastaFile(faa)  # protein
+
+    gff: GffFile = import_settings.find_file('gff', root_dir=work_dir.name, as_class=GffFile)  # general feature format
+    sqn: GenomeFile = import_settings.find_file('sqn', root_dir=work_dir.name,
+                                                as_class=GenomeFile, expected=False)  # general feature format
+
+    files = dict(fna=fna, gbk=gbk, ffn=ffn, faa=faa, gff=gff, sqn=sqn)
+
+    custom_annotations = import_settings.find_custom_annotations(
+        work_dir.name)  # custom annotation files / eggnog files
 
     if rename:
-        arx_importer.rename_all(new_locus_tag_prefix=f'{arx_importer.genome}_')
+        rename_all(
+            root_dir=work_dir.name, gbk=gbk,
+            files=[gbk, gff, faa, ffn, *custom_annotations],
+            new_prefix=f'{genome}_'
+        )
 
-    arx_importer.gather_metadata()
+    organism_json, genome_json = gather_metadata(import_settings, root_dir=work_dir.name, files=files,
+                                                 custom_annotations=custom_annotations,
+                                                 organism_dir=organism_dir, import_dir=import_dir, organism=organism,
+                                                 genome=genome)
 
     if check_files:
-        arx_importer.check_files()
+        check_files_(locus_tag_prefix=f'{genome}_', files=files, custom_annotations=custom_annotations)
 
-    arx_importer.perform_import()
+    # final movement
+    os.makedirs(os.path.dirname(genome_dir), exist_ok=True)
+    shutil.copytree(src=work_dir.name, dst=genome_dir, symlinks=True)
+
+    os.chdir(_work_dir)
+    work_dir.cleanup()
+
+    with open(os.path.join(organism_dir, 'organism.json'), 'w') as f:
+        json.dump(organism_json, f, indent=4)
+    with open(os.path.join(genome_dir, 'genome.json'), 'w') as f:
+        json.dump(genome_json, f, indent=4)
 
 
 def main():

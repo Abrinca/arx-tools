@@ -18,7 +18,7 @@ import_genome --import_dir=/path/to/genome/data --organism STRAIN --genome STRAI
 
 ## Documentation
 
-📖 **Documentation:** [tools.abrinca.com](https://tools.abrinca.com)
+📖 **Documentation:** [docs.abrinca.com/tools](https://docs.abrinca.com/tools/)
 
 ## Help
 

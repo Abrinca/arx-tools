@@ -15,7 +15,7 @@ README = (HERE / 'README.md').read_text()
 # This call to setup() does all the work
 setup(
     name='arx-tools',
-    version='0.0.9',
+    version='1.0.0',
     description='Set of scripts to aid Arx administrators import data',
     long_description=README,
     long_description_content_type='text/markdown',

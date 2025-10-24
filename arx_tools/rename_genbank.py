@@ -113,7 +113,7 @@ class GenBankFile(GenomeFile):
                 cds_tool_version=f'{bakta_version}:{bakta_db_verson}'
             )
         else:
-            raise AssertionError(f'Failed to discover annotation information from {self.path=}')
+            logging.warning(f'Failed to discover annotation information from {self.path=}')
 
         # get  BioProject / BioSample metadata
         if hasattr(rec, 'dbxrefs'):

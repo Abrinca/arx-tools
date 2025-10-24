@@ -75,6 +75,7 @@ class GenBankToFasta:
             raise AssertionError(f'Format must be either faa or ffn! {format=}')
 
         locus_tags = set()
+        duplicated_locus_tags = set()
         with open(gbk) as f:
             for rec in SeqIO.parse(f, "genbank"):
                 for feature in rec.features:
@@ -84,10 +85,16 @@ class GenBankToFasta:
 
                     # check if locus_tag is unique
                     if locus_tag in locus_tags:
-                        logging.warning(f'GenBank is strange: {locus_tag} occurs multiple times!')
+                        duplicated_locus_tags.add(locus_tag)
+                        continue  # Fix for more complicated genomes such as Saccharomyces cerevisiae S288C
+
                     locus_tags.add(locus_tag)
 
                     yield f'>{locus_tag} {gene_product}\n{sequence}'
+
+        if len(duplicated_locus_tags) > 0:
+            logging.warning(f"GenBank is strange: {len(duplicated_locus_tags)} duplicated locus tags! "
+                            f"Here's some: {list(duplicated_locus_tags)[:10]}")
 
         if expected_entries is not None and expected_entries != len(locus_tags):
             msg = f'GenBank is strange: Claims to have {expected_entries} {expected_type}, but only has {len(locus_tags)} unique locus_tags!'

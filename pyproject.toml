@@ -1,0 +1,52 @@
+[project]
+name = "arx-tools"
+version = "1.0.1"
+description = "Set of scripts to aid Arx administrators import data"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+  { name = "Abrinca", email = "info@abrinca.com" },
+]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+]
+dependencies = [
+    "pandas",
+    "biopython",
+    "fire",
+    "schema",
+    "termcolor",
+    "pyyaml"
+]
+
+[project.urls]
+"Homepage" = "https://docs.abrinca.com/tools/"
+
+[project.scripts]
+init_folder_structure = "arx_tools.init_folder_structure:main"
+import_genome = "arx_tools.import_genome:main"
+download_ncbi_genome = "arx_tools.download_ncbi_genome:main"
+genbank_to_fasta = "arx_tools.genbank_to_fasta:main"
+reindex_assembly = "arx_tools.reindex_assembly:main"
+rename_custom_annotations = "arx_tools.rename_custom_annotations:main"
+rename_eggnog = "arx_tools.rename_eggnog:main"
+rename_fasta = "arx_tools.rename_fasta:main"
+rename_genbank = "arx_tools.rename_genbank:main"
+rename_gff = "arx_tools.rename_gff:main"
+init_orthofinder = "arx_tools.init_orthofinder:main"
+import_orthofinder = "arx_tools.import_orthofinder:main"
+folder_looper = "arx_tools.folder_looper:main"
+update_folder_structure = "arx_tools.update_folder_structure:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["arx_tools*"]
+
+[tool.uv.sources]
+orthofinder-coreselector = { git = "https://github.com/MrTomRod/orthofinder-coreselector" }

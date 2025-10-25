@@ -436,65 +436,57 @@ def import_genome(
     genome_dir = os.path.join(organism_dir, 'genomes', genome)
     assert not os.path.exists(genome_dir), f'Could not import {organism}:{genome}: {genome_dir=} already exists!'
 
-    work_dir = tempfile.TemporaryDirectory()
-    _work_dir = os.getcwd()
-    os.chdir(work_dir.name)
+    with tempfile.TemporaryDirectory() as work_dir:
+        import_settings.execute_actions(import_dir, work_dir, genome, organism)
 
-    import_settings.execute_actions(import_dir, work_dir.name, genome, organism)
+        if pause:
+            print(f'Files are prepared here: {work_dir} Press enter to continue with import. Press Ctrl+C to abort.')
+            input()
 
-    if pause:
-        print(f'Files are prepared here: {work_dir.name} Press enter to continue with import. Press Ctrl+C to abort.')
-        input()
+        fna: FastaFile = import_settings.find_file('fna', root_dir=work_dir, as_class=FastaFile)  # assembly
+        gbk: GenBankFile = import_settings.find_file('gbk', root_dir=work_dir, as_class=GenBankFile)  # genbank
 
-    fna: FastaFile = import_settings.find_file('fna', root_dir=work_dir.name, as_class=FastaFile)  # assembly
-    gbk: GenBankFile = import_settings.find_file('gbk', root_dir=work_dir.name, as_class=GenBankFile)  # genbank
+        ffn = import_settings.find_file('ffn', root_dir=work_dir, as_class=FastaFile, expected=False)  # nucleic acid sequences
+        if ffn is None:
+            logging.info(f'Failed to auto-detect ffn.')
+            ffn = gbk.path[:-4] + '.ffn'
 
-    ffn = import_settings.find_file('ffn', root_dir=work_dir.name, as_class=FastaFile,
-                                    expected=False)  # nucleic acid sequences
-    if ffn is None:
-        logging.info(f'Failed to auto-detect ffn.')
-        ffn = gbk.path[:-4] + '.ffn'
+            gbk.create_ffn(ffn=f'{work_dir}/{ffn}')
+            ffn = FastaFile(ffn)  # nucleic acid sequences
 
-        gbk.create_ffn(ffn=f'{work_dir.name}/{ffn}')
-        ffn = FastaFile(ffn)  # nucleic acid sequences
+        faa = import_settings.find_file('faa', root_dir=work_dir, as_class=FastaFile, expected=False)  # protein
+        if faa is None:
+            logging.info(f'Failed to auto-detect faa.')
+            faa = gbk.path[:-4] + '.faa'
+            gbk.create_faa(faa=f'{work_dir}/{faa}')
+            faa = FastaFile(faa)  # protein
 
-    faa = import_settings.find_file('faa', root_dir=work_dir.name, as_class=FastaFile, expected=False)  # protein
-    if faa is None:
-        logging.info(f'Failed to auto-detect faa.')
-        faa = gbk.path[:-4] + '.faa'
-        gbk.create_faa(faa=f'{work_dir.name}/{faa}')
-        faa = FastaFile(faa)  # protein
+        gff: GffFile = import_settings.find_file('gff', root_dir=work_dir, as_class=GffFile)  # general feature format
+        sqn: GenomeFile = import_settings.find_file('sqn', root_dir=work_dir,
+                                                    as_class=GenomeFile, expected=False)  # general feature format
 
-    gff: GffFile = import_settings.find_file('gff', root_dir=work_dir.name, as_class=GffFile)  # general feature format
-    sqn: GenomeFile = import_settings.find_file('sqn', root_dir=work_dir.name,
-                                                as_class=GenomeFile, expected=False)  # general feature format
+        files = dict(fna=fna, gbk=gbk, ffn=ffn, faa=faa, gff=gff, sqn=sqn)
 
-    files = dict(fna=fna, gbk=gbk, ffn=ffn, faa=faa, gff=gff, sqn=sqn)
+        custom_annotations = import_settings.find_custom_annotations(work_dir)  # custom annotation files / eggnog files
 
-    custom_annotations = import_settings.find_custom_annotations(
-        work_dir.name)  # custom annotation files / eggnog files
+        if rename:
+            rename_all(
+                root_dir=work_dir, gbk=gbk,
+                files=[gbk, gff, faa, ffn, *custom_annotations],
+                new_prefix=f'{genome}_'
+            )
 
-    if rename:
-        rename_all(
-            root_dir=work_dir.name, gbk=gbk,
-            files=[gbk, gff, faa, ffn, *custom_annotations],
-            new_prefix=f'{genome}_'
-        )
+        organism_json, genome_json = gather_metadata(import_settings, root_dir=work_dir, files=files,
+                                                    custom_annotations=custom_annotations,
+                                                    organism_dir=organism_dir, import_dir=import_dir, organism=organism,
+                                                    genome=genome)
 
-    organism_json, genome_json = gather_metadata(import_settings, root_dir=work_dir.name, files=files,
-                                                 custom_annotations=custom_annotations,
-                                                 organism_dir=organism_dir, import_dir=import_dir, organism=organism,
-                                                 genome=genome)
+        if check_files:
+            check_files_(locus_tag_prefix=f'{genome}_', files=files, custom_annotations=custom_annotations)
 
-    if check_files:
-        check_files_(locus_tag_prefix=f'{genome}_', files=files, custom_annotations=custom_annotations)
-
-    # final movement
-    os.makedirs(os.path.dirname(genome_dir), exist_ok=True)
-    shutil.copytree(src=work_dir.name, dst=genome_dir, symlinks=True)
-
-    os.chdir(_work_dir)
-    work_dir.cleanup()
+        # final movement
+        os.makedirs(os.path.dirname(genome_dir), exist_ok=True)
+        shutil.copytree(src=work_dir, dst=genome_dir, symlinks=True)
 
     with open(os.path.join(organism_dir, 'organism.json'), 'w') as f:
         json.dump(organism_json, f, indent=4)

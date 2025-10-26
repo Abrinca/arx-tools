@@ -1,9 +1,9 @@
 [project]
 name = "arx-tools"
-version = "1.0.1"
+version = "1.0.2"
 description = "Set of scripts to aid Arx administrators import data"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
   { name = "Abrinca", email = "info@abrinca.com" },
@@ -11,7 +11,6 @@ authors = [
 classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
 ]
 dependencies = [
     "pandas",
@@ -24,6 +23,7 @@ dependencies = [
 
 [project.urls]
 "Homepage" = "https://docs.abrinca.com/tools/"
+"Repository" = "https://github.com/Abrinca/arx-tools"
 
 [project.scripts]
 init_folder_structure = "arx_tools.init_folder_structure:main"

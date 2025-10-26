@@ -168,21 +168,21 @@ class ImportSettings:
         self.check_expected(files, expected, glob_pattern)
         return files
 
-    def find_file(self, type_: str, root_dir: str, as_class=None, expected: bool = True) \
-            -> Union[str, GenomeFile, None]:
+    def find_file(self, type_: str, root_dir: str, as_class=None, expected: bool = True) -> Union[str, GenomeFile, None]:
         files = self.find_files(type_, root_dir)
 
         if len(files) == 1:
+            abs_path = os.path.join(root_dir, files[0])
             if as_class is None:
-                return files[0]
+                return abs_path
             else:
-                with WorkingDirectory(root_dir):
-                    return as_class(files[0])
+                return as_class(abs_path)
         else:
             if expected:
-                raise AssertionError(f'Error: found {len(files)} files of {type_=}: {files=}')
+                raise AssertionError(
+                    f'Error: found {len(files)} files of {type_=}: {files=}')
             else:
-                f'Found no {type_} files.'
+                logging.info(f'Found no {type_} files.')
                 return None
 
     def find_custom_annotations(self, root_dir: str):
@@ -201,7 +201,7 @@ class ImportSettings:
 
                 if files:
                     annotations.append(CustomAnnotationFile(
-                        file=files[0],
+                        file=os.path.join(root_dir, files[0]),
                         custom_annotation_type=custom_annotation['anno_type'])
                     )
                 if not files and expected:
@@ -277,22 +277,21 @@ def load_cog_metadata(custom_annotations: [GenomeFile]) -> dict:
 
 
 def add_files_to_json(genome_json: dict, files: dict, custom_annotations) -> dict:
-    def get(key):
+    def relname(key):
         file = files[key]
-        return None if file is None else file.path
+        return None if file is None else os.path.basename(file.path)
 
-    genome_json['cds_tool_faa_file'] = get('faa')
-    genome_json['cds_tool_ffn_file'] = get('ffn')
-    genome_json['cds_tool_gbk_file'] = get('gbk')
-    genome_json['cds_tool_gff_file'] = get('gff')
-    genome_json['cds_tool_sqn_file'] = get('sqn')
-    genome_json['assembly_fasta_file'] = get('fna')
+    genome_json['cds_tool_faa_file'] = relname('faa')
+    genome_json['cds_tool_ffn_file'] = relname('ffn')
+    genome_json['cds_tool_gbk_file'] = relname('gbk')
+    genome_json['cds_tool_gff_file'] = relname('gff')
+    genome_json['cds_tool_sqn_file'] = relname('sqn')
+    genome_json['assembly_fasta_file'] = relname('fna')
     genome_json['custom_annotations'] = [
-        {'date': ca.date_str(), 'file': ca.path, 'type': ca.custom_annotation_type}
+        {'date': ca.date_str(), 'file': os.path.basename(ca.path), 'type': ca.custom_annotation_type}
         for ca in custom_annotations
     ]
     return genome_json
-
 
 def gather_metadata(import_settings: ImportSettings, root_dir: str, files: [GenomeFile],
                     custom_annotations: [GenomeFile], organism_dir: str, import_dir: str,
@@ -436,65 +435,64 @@ def import_genome(
     genome_dir = os.path.join(organism_dir, 'genomes', genome)
     assert not os.path.exists(genome_dir), f'Could not import {organism}:{genome}: {genome_dir=} already exists!'
 
-    work_dir = tempfile.TemporaryDirectory()
-    _work_dir = os.getcwd()
-    os.chdir(work_dir.name)
+    with tempfile.TemporaryDirectory() as work_dir:
+        import_settings.execute_actions(import_dir, work_dir, genome, organism)
 
-    import_settings.execute_actions(import_dir, work_dir.name, genome, organism)
+        if pause:
+            print(f'Files are prepared here: {work_dir} Press enter to continue with import. Press Ctrl+C to abort.')
+            input()
 
-    if pause:
-        print(f'Files are prepared here: {work_dir.name} Press enter to continue with import. Press Ctrl+C to abort.')
-        input()
+        fna: FastaFile = import_settings.find_file('fna', root_dir=work_dir, as_class=FastaFile)
+        gbk: GenBankFile = import_settings.find_file('gbk', root_dir=work_dir, as_class=GenBankFile)
+        gff: GffFile = import_settings.find_file('gff', root_dir=work_dir, as_class=GffFile)
 
-    fna: FastaFile = import_settings.find_file('fna', root_dir=work_dir.name, as_class=FastaFile)  # assembly
-    gbk: GenBankFile = import_settings.find_file('gbk', root_dir=work_dir.name, as_class=GenBankFile)  # genbank
+        ffn = import_settings.find_file('ffn', root_dir=work_dir, as_class=FastaFile, expected=False)
+        if ffn is None:
+            logging.info('Failed to auto-detect ffn.')
+            base = os.path.splitext(os.path.basename(gbk.path))[0]
+            ffn_path = os.path.join(work_dir, base + '.ffn')
+            gbk.create_ffn(ffn=ffn_path)
+            ffn = FastaFile(ffn_path)
 
-    ffn = import_settings.find_file('ffn', root_dir=work_dir.name, as_class=FastaFile,
-                                    expected=False)  # nucleic acid sequences
-    if ffn is None:
-        logging.info(f'Failed to auto-detect ffn.')
-        ffn = gbk.path[:-4] + '.ffn'
+        faa = import_settings.find_file('faa', root_dir=work_dir, as_class=FastaFile, expected=False)
+        if faa is None:
+            logging.info('Failed to auto-detect faa.')
+            base = os.path.splitext(os.path.basename(gbk.path))[0]
+            faa_path = os.path.join(work_dir, base + '.faa')
+            gbk.create_faa(faa=faa_path)
+            faa = FastaFile(faa_path)
 
-        gbk.create_ffn(ffn=f'{work_dir.name}/{ffn}')
-        ffn = FastaFile(ffn)  # nucleic acid sequences
+        sqn: GenomeFile = import_settings.find_file(
+            'sqn', root_dir=work_dir, as_class=GenomeFile, expected=False)
 
-    faa = import_settings.find_file('faa', root_dir=work_dir.name, as_class=FastaFile, expected=False)  # protein
-    if faa is None:
-        logging.info(f'Failed to auto-detect faa.')
-        faa = gbk.path[:-4] + '.faa'
-        gbk.create_faa(faa=f'{work_dir.name}/{faa}')
-        faa = FastaFile(faa)  # protein
+        files = dict(fna=fna, gbk=gbk, ffn=ffn, faa=faa, gff=gff, sqn=sqn)
 
-    gff: GffFile = import_settings.find_file('gff', root_dir=work_dir.name, as_class=GffFile)  # general feature format
-    sqn: GenomeFile = import_settings.find_file('sqn', root_dir=work_dir.name,
-                                                as_class=GenomeFile, expected=False)  # general feature format
+        custom_annotations = import_settings.find_custom_annotations(work_dir)
 
-    files = dict(fna=fna, gbk=gbk, ffn=ffn, faa=faa, gff=gff, sqn=sqn)
+        if rename:
+            rename_all(
+                root_dir=work_dir, gbk=gbk,
+                files=[gbk, gff, faa, ffn, *custom_annotations],
+                new_prefix=f'{genome}_'
+            )
 
-    custom_annotations = import_settings.find_custom_annotations(
-        work_dir.name)  # custom annotation files / eggnog files
-
-    if rename:
-        rename_all(
-            root_dir=work_dir.name, gbk=gbk,
-            files=[gbk, gff, faa, ffn, *custom_annotations],
-            new_prefix=f'{genome}_'
+        organism_json, genome_json = gather_metadata(
+            import_settings,
+            root_dir=work_dir,
+            files=files,
+            custom_annotations=custom_annotations,
+            organism_dir=organism_dir,
+            import_dir=import_dir,
+            organism=organism,
+            genome=genome
         )
 
-    organism_json, genome_json = gather_metadata(import_settings, root_dir=work_dir.name, files=files,
-                                                 custom_annotations=custom_annotations,
-                                                 organism_dir=organism_dir, import_dir=import_dir, organism=organism,
-                                                 genome=genome)
+        if check_files:
+            check_files_(locus_tag_prefix=f'{genome}_', files=files, custom_annotations=custom_annotations)
 
-    if check_files:
-        check_files_(locus_tag_prefix=f'{genome}_', files=files, custom_annotations=custom_annotations)
-
-    # final movement
-    os.makedirs(os.path.dirname(genome_dir), exist_ok=True)
-    shutil.copytree(src=work_dir.name, dst=genome_dir, symlinks=True)
-
-    os.chdir(_work_dir)
-    work_dir.cleanup()
+        # final movement
+        os.makedirs(os.path.dirname(genome_dir), exist_ok=True)
+        shutil.copytree(src=work_dir, dst=genome_dir, symlinks=True)
 
     with open(os.path.join(organism_dir, 'organism.json'), 'w') as f:
         json.dump(organism_json, f, indent=4)

@@ -1,3 +1,4 @@
+import logging
 from re import compile
 from datetime import datetime
 from functools import cached_property
@@ -19,7 +20,7 @@ class EggnogFile(GenomeFile):
             new_locus_tag_prefix: str,
             old_locus_tag_prefix: str = None,
             validate: bool = False,
-               update_path: bool = True
+            update_path: bool = True
     ) -> None:
         old_locus_tag_prefix = self._pre_rename_check(out, new_locus_tag_prefix, old_locus_tag_prefix)
 
@@ -27,7 +28,7 @@ class EggnogFile(GenomeFile):
             content = in_f.readlines()
 
         def rename_line(line: str):
-            if line.startswith('#'):
+            if line.startswith('#') or line.strip() == '':
                 return line
 
             locus_tag, rest = line.split('\t', 1)
@@ -50,7 +51,7 @@ class EggnogFile(GenomeFile):
     def detect_locus_tag_prefix(self) -> str:
         with open(self.path) as f:
             for line in f:
-                if line.startswith('#'):
+                if line.startswith('#') or line.strip() == '':
                     continue
 
                 locus_tag = line.split('\t', 1)[0]
@@ -63,16 +64,17 @@ class EggnogFile(GenomeFile):
         with open(self.path) as f:
             head = [next(f) for x in range(4)]
 
-        if head[0].startswith('##'):
-            date_line = head[0].strip()
-            dt = datetime.strptime(date_line[3:], '%c')
-        elif head[0].startswith('#'):
-            date_line = head[2].strip()
-            dt = datetime.strptime(date_line[8:], '%c')
-        else:
-            dt = super().date()  # use creation date of file
+        try:
+            if head[0].startswith('##'):
+                date_line = head[0].strip()
+                return datetime.strptime(date_line[3:], '%c')
+            elif head[0].startswith('#'):
+                date_line = head[2].strip()
+                return datetime.strptime(date_line[8:], '%c')
+        except Exception as e:
+            logging.info(f'Failed to extract datetime from eggNOG file. {e}')
 
-        return dt
+        return super().date()  # use creation date of file
 
     @cached_property
     def custom_annotation_type(self) -> str:
@@ -91,7 +93,7 @@ class EggnogFile(GenomeFile):
 
         with open(self.path) as f:
             for line in f:
-                if line.startswith('#'):
+                if line.startswith('#') or line.strip() == '':
                     continue
 
                 locus_tag = line.split('\t', 1)[0]
@@ -112,7 +114,7 @@ class EggnogFile(GenomeFile):
 
         with open(self.path) as f:
             for line in f:
-                if line.startswith('#'):
+                if line.startswith('#') or line.strip() == '':
                     continue
                 n_genes += 1
 

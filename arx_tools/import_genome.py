@@ -372,11 +372,12 @@ def gather_metadata(import_settings: ImportSettings, root_dir: str, files: [Geno
     return organism_json, genome_json
 
 
-def check_files_(genome_id: str, locus_tag_prefix: str, files: dict, custom_annotations: [GenomeFile]) -> None:
-    files['gbk'].validate_contig_ids(genome_id=genome_id)
+def check_files_(genome_id: str, locus_tag_prefix: str, files: dict, custom_annotations: [GenomeFile],
+                 contig_format: str = '_scf{n:05d}') -> None:
+    files['gbk'].validate_contig_ids(genome_id=genome_id, contig_format=contig_format)
     files['gbk'].validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
     if files['fna'] is not None:
-        files['fna'].validate_contig_ids(genome_id=genome_id)
+        files['fna'].validate_contig_ids(genome_id=genome_id, contig_format=contig_format)
     files['gff'].validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
     files['faa'].validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
     files['ffn'].validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
@@ -554,7 +555,7 @@ def import_genome(
         )
 
         if check_files:
-            check_files_(genome_id=genome, locus_tag_prefix=f'{genome}_', files=files, custom_annotations=custom_annotations)
+            check_files_(genome_id=genome, locus_tag_prefix=f'{genome}_', files=files, custom_annotations=custom_annotations, contig_format=contig_format)
 
         # final movement
         os.makedirs(os.path.dirname(genome_dir), exist_ok=True)

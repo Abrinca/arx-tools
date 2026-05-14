@@ -1,7 +1,7 @@
 import re
 import logging
 
-from .utils import GenomeFile, split_locus_tag
+from .utils import GenomeFile, split_locus_tag, contig_format_to_regex
 
 
 class FastaFile(GenomeFile):
@@ -60,13 +60,13 @@ class FastaFile(GenomeFile):
         if update_path:
             self.path = out
 
-    def validate_contig_ids(self, genome_id: str) -> None:
-        """Check that all contig IDs match {genome_id}_scf<digits>. Raise AssertionError if not."""
-        pattern = re.compile(rf'^{re.escape(genome_id)}_scf\d+$')
+    def validate_contig_ids(self, genome_id: str, contig_format: str = '_scf{n:05d}') -> None:
+        """Check that all contig IDs match {genome_id}{contig_format}. Raise AssertionError if not."""
+        pattern = re.compile(rf'^{re.escape(genome_id)}{contig_format_to_regex(contig_format)}$')
         for contig_id in self.get_contig_ids():
             assert pattern.match(contig_id), \
                 f'Contig ID {contig_id!r} in {self.path} does not match expected format ' \
-                f'{genome_id!r}_scf<N>. Use --rename to auto-normalize.'
+                f'{genome_id!r}{contig_format!r}. Use --rename to auto-normalize.'
 
     def detect_locus_tag_prefix(self) -> str:
         with open(self.path) as f:

@@ -228,6 +228,12 @@ def split_locus_tag(locus_tag: str) -> (str, str):
     return prefix, locus_tag[len(prefix):]
 
 
+def contig_format_to_regex(contig_format: str) -> str:
+    """Convert a contig_format string like '_scf{n:05d}' to a regex suffix like '_scf\\d+'."""
+    parts = re.split(r'\{[^}]+\}', contig_format)
+    return r'\d+'.join(re.escape(part) for part in parts)
+
+
 def create_replace_function(replace_map: {str: str}) -> Callable:
     '''
     Returns a function that will replace all replace_map.keys with their corresponding replace_map.values

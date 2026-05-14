@@ -4,7 +4,7 @@ import logging
 
 from Bio import SeqIO, SeqRecord, SeqFeature
 from .utils import GenomeFile, query_int, entrez_organism_to_taxid, date_to_string, datetime, create_replace_function, \
-    split_locus_tag
+    split_locus_tag, contig_format_to_regex
 from .genbank_to_fasta import GenBankToFasta
 
 
@@ -131,14 +131,14 @@ class GenBankFile(GenomeFile):
         with open(self.path) as f:
             return [rec.id for rec in SeqIO.parse(f, 'genbank')]
 
-    def validate_contig_ids(self, genome_id: str) -> None:
-        """Check that all contig IDs match {genome_id}_scf<digits>. Raise AssertionError if not."""
-        pattern = re.compile(rf'^{re.escape(genome_id)}_scf\d+$')
+    def validate_contig_ids(self, genome_id: str, contig_format: str = '_scf{n:05d}') -> None:
+        """Check that all contig IDs match {genome_id}{contig_format}. Raise AssertionError if not."""
+        pattern = re.compile(rf'^{re.escape(genome_id)}{contig_format_to_regex(contig_format)}$')
         with open(self.path) as f:
             for rec in SeqIO.parse(f, 'genbank'):
                 assert pattern.match(rec.id), \
                     f'Contig ID {rec.id!r} in {self.path} does not match expected format ' \
-                    f'{genome_id!r}_scf<N>. Use --rename to auto-normalize.'
+                    f'{genome_id!r}{contig_format!r}. Use --rename to auto-normalize.'
 
     def validate_locus_tags(self, locus_tag_prefix: str = None):
         if locus_tag_prefix is None:

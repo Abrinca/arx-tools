@@ -134,13 +134,13 @@ _BLAST_EXTENSIONS = {
 }
 
 
-def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False):
+def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_format: str = '_scf{n:05d}'):
     """
     Upgrade folder structure from v2 to v3.
 
     Per genome:
       - Backs up the .gbk file to {genome}.gbk.v2.bak
-      - Canonicalizes contig IDs ({genome}_scf00001, …) and locus_tags ({genome}_00001, …)
+      - Canonicalizes contig IDs ({genome}{contig_format}, …) and locus_tags ({genome}_00001, …)
       - Regenerates .fna, .gff, .faa, .ffn from the normalized .gbk
       - Deletes BLAST databases (they reference old contig/locus IDs)
     """
@@ -150,6 +150,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False):
         v_from=2, v_to=3,
         actions=[
             'back up each .gbk to {genome}.gbk.v2.bak',
+            'back up each custom annotation file to {file}.v2.bak',
             'rename contigs to {genome}_scf00001, … and locus_tags to {genome}_00001, …',
             'apply locus_tag rename map to all custom annotation files (eggnog, GO, EC, …)',
             'regenerate .fna, .gff, .faa, .ffn from the normalized .gbk',
@@ -183,7 +184,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False):
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix='.gbk') as tmp:
                 tmp_path = tmp.name
-            _, lt_map = GenBankFile(gbk_path).normalize(out=tmp_path, genome_id=genome_id)
+            _, lt_map = GenBankFile(gbk_path).normalize(out=tmp_path, genome_id=genome_id, contig_format=contig_format)
             shutil.move(tmp_path, gbk_path)
             print(f'{genome_id}: normalized .gbk ({len(lt_map)} locus tags renamed)')
         except Exception as e:
@@ -200,6 +201,9 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False):
                 print(f'{genome_id}: custom annotation file not found: {ca["file"]}, skipping')
                 continue
             try:
+                ca_backup = ca_path + '.v2.bak'
+                if not os.path.exists(ca_backup):
+                    shutil.copy2(ca_path, ca_backup)
                 _apply_lt_map_to_annotation_file(ca_path, lt_map, is_eggnog=ca['type'].startswith('eggnog'))
             except Exception as e:
                 print(f'{genome_id}: ERROR renaming locus tags in {ca["file"]}: {e}')

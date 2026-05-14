@@ -68,7 +68,7 @@
     "hyperlinks": [
       {
         "name": "Uniprot",
-        "url": "https://www.uniprot.org/uniprot/?query=gene%3A${annotation}&sort=score"
+        "url": "https://www.uniprot.org/uniprotkb?query=(gene%5C%3A${annotation})"
       }
     ]
   },
@@ -79,7 +79,7 @@
     "hyperlinks": [
       {
         "name": "Uniprot",
-        "url": "https://www.uniprot.org/uniprot/?query=name%3A%22${annotation}%22&sort=score"
+        "url": "https://www.uniprot.org/uniprotkb?query=(name%5C%3A${annotation})"
       },
       {
         "name": "PubMed",
@@ -94,7 +94,7 @@
     "hyperlinks": [
       {
         "name": "Uniprot",
-        "url": "https://www.uniprot.org/uniprot/?query=gene%3A${annotation.substring(3)}&sort=score"
+        "url": "https://www.uniprot.org/uniprotkb?query=(gene%5C%3A${annotation.substring(3)})"
       }
     ]
   },
@@ -116,7 +116,7 @@
     "hyperlinks": [
       {
         "name": "Uniprot",
-        "url": "https://www.uniprot.org/uniprot/?query=name%3A%22${annotation.substring(3)}%22&sort=score"
+        "url": "https://www.uniprot.org/uniprotkb?query=(name%5C%3A${annotation.substring(3)})"
       },
       {
         "name": "PubMed",

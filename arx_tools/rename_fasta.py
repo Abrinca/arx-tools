@@ -60,7 +60,7 @@ class FastaFile(GenomeFile):
         if update_path:
             self.path = out
 
-    def validate_contig_ids(self, genome_id: str, contig_format: str = '_scf{n:05d}') -> None:
+    def validate_contig_ids(self, genome_id: str, contig_format: str = '_scf{n}') -> None:
         """Check that all contig IDs match {genome_id}{contig_format}. Raise AssertionError if not."""
         pattern = re.compile(rf'^{re.escape(genome_id)}{contig_format_to_regex(contig_format)}$')
         for contig_id in self.get_contig_ids():

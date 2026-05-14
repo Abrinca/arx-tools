@@ -73,7 +73,7 @@ class GenBankFile(GenomeFile):
 
     def normalize(self, out: str, genome_id: str,
                   contig_ids: list[str] = None,
-                  contig_format: str = '_scf{n:05d}') -> tuple[dict, dict]:
+                  contig_format: str = '_scf{n}') -> tuple[dict, dict]:
         """
         Canonicalize contig IDs and locus_tags in a GenBank file.
 
@@ -131,7 +131,7 @@ class GenBankFile(GenomeFile):
         with open(self.path) as f:
             return [rec.id for rec in SeqIO.parse(f, 'genbank')]
 
-    def validate_contig_ids(self, genome_id: str, contig_format: str = '_scf{n:05d}') -> None:
+    def validate_contig_ids(self, genome_id: str, contig_format: str = '_scf{n}') -> None:
         """Check that all contig IDs match {genome_id}{contig_format}. Raise AssertionError if not."""
         pattern = re.compile(rf'^{re.escape(genome_id)}{contig_format_to_regex(contig_format)}$')
         with open(self.path) as f:

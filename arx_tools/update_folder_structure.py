@@ -134,13 +134,39 @@ _BLAST_EXTENSIONS = {
 }
 
 
-def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_format: str = '_scf{n:05d}'):
+def _rename_assembly_fna_headers(fna_path: str, contig_map: dict) -> int:
+    """Rewrite FASTA headers in-place using contig_map (old_id → new_id). Returns count of renamed headers."""
+    with open(fna_path) as f:
+        lines = f.readlines()
+
+    renamed = 0
+    result = []
+    for line in lines:
+        if line.startswith('>'):
+            # Header may be ">old_id optional description"
+            parts = line[1:].split(None, 1)
+            old_id = parts[0]
+            if old_id in contig_map:
+                rest = (' ' + parts[1]) if len(parts) > 1 else '\n'
+                line = f'>{contig_map[old_id]}{rest}'
+                renamed += 1
+        result.append(line)
+
+    with tempfile.NamedTemporaryFile('w', delete=False, dir=os.path.dirname(fna_path)) as tmp:
+        tmp.writelines(result)
+        tmp_path = tmp.name
+    shutil.move(tmp_path, fna_path)
+    return renamed
+
+
+def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_format: str = '_scf{n}'):
     """
     Upgrade folder structure from v2 to v3.
 
     Per genome:
       - Backs up the .gbk file to {genome}.gbk.v2.bak
       - Canonicalizes contig IDs ({genome}{contig_format}, …) and locus_tags ({genome}_00001, …)
+      - Renames contig headers in the assembly FNA (1_assembly/) to match
       - Regenerates .fna, .gff, .faa, .ffn from the normalized .gbk
       - Deletes BLAST databases (they reference old contig/locus IDs)
     """
@@ -151,8 +177,9 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         actions=[
             'back up each .gbk to {genome}.gbk.v2.bak',
             'back up each custom annotation file to {file}.v2.bak',
-            'rename contigs to {genome}_scf00001, … and locus_tags to {genome}_00001, …',
+            'rename contigs to {genome}_scf1, … and locus_tags to {genome}_00001, …',
             'apply locus_tag rename map to all custom annotation files (eggnog, GO, EC, …)',
+            'update assembly FNA (1_assembly/) contig headers to match',
             'regenerate .fna, .gff, .faa, .ffn from the normalized .gbk',
             'delete BLAST databases (will be rebuilt on next import)',
         ],
@@ -184,7 +211,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix='.gbk') as tmp:
                 tmp_path = tmp.name
-            _, lt_map = GenBankFile(gbk_path).normalize(out=tmp_path, genome_id=genome_id, contig_format=contig_format)
+            contig_map, lt_map = GenBankFile(gbk_path).normalize(out=tmp_path, genome_id=genome_id, contig_format=contig_format)
             shutil.move(tmp_path, gbk_path)
             print(f'{genome_id}: normalized .gbk ({len(lt_map)} locus tags renamed)')
         except Exception as e:
@@ -209,6 +236,17 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                 print(f'{genome_id}: ERROR renaming locus tags in {ca["file"]}: {e}')
         if custom_annotations:
             print(f'{genome_id}: updated locus tags in {len(custom_annotations)} custom annotation file(s)')
+
+        # 4. Update assembly FNA contig headers to match new contig IDs
+        asm_fna_filename = genome_json.get('assembly_fasta_file')
+        if asm_fna_filename and contig_map:
+            asm_fna_path = os.path.join(genome.path, asm_fna_filename)
+            if os.path.exists(asm_fna_path):
+                try:
+                    renamed = _rename_assembly_fna_headers(asm_fna_path, contig_map)
+                    print(f'{genome_id}: updated {renamed} contig header(s) in assembly FNA')
+                except Exception as e:
+                    print(f'{genome_id}: ERROR updating assembly FNA headers: {e}')
 
         gbk = GenBankFile(gbk_path)
 

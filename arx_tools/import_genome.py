@@ -373,7 +373,7 @@ def gather_metadata(import_settings: ImportSettings, root_dir: str, files: [Geno
 
 
 def check_files_(genome_id: str, locus_tag_prefix: str, files: dict, custom_annotations: [GenomeFile],
-                 contig_format: str = '_scf{n:05d}') -> None:
+                 contig_format: str = '_scf{n}') -> None:
     files['gbk'].validate_contig_ids(genome_id=genome_id, contig_format=contig_format)
     files['gbk'].validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
     if files['fna'] is not None:
@@ -429,7 +429,7 @@ def import_genome(
     assert os.path.isdir(import_dir), f'Cannot import files: {import_dir=} does not exist.'
 
     # Read optional contig_format from import_dir/genome.json before any processing.
-    contig_format = '_scf{n:05d}'
+    contig_format = '_scf{n}'
     _import_gj_path = os.path.join(import_dir, 'genome.json')
     if os.path.isfile(_import_gj_path):
         with open(_import_gj_path) as _f:
@@ -483,7 +483,7 @@ def import_genome(
                     for i, gbk_id in enumerate(gbk_contig_ids)
                 }
                 tmp_fna = _pre_fna.path + '.renaming'
-                _pre_fna.rename_contig_ids(out=tmp_fna, new_ids=[contig_id_map[i] for i in fna_contig_ids])
+                _pre_fna.rename_contig_ids(out=tmp_fna, new_ids=[contig_id_map[i] for i in fna_contig_ids], update_path=False)
                 os.replace(tmp_fna, _pre_fna.path)
                 canonical_ids = [contig_id_map[i] for i in gbk_contig_ids]
             else:

@@ -8,6 +8,38 @@ from Bio import SeqIO, SeqRecord, SeqFeature
 
 class GenBankToFasta:
     @classmethod
+    def create_fna(cls, gbk: str, out: str):
+        """Extract contig sequences from a GenBank file into a FASTA file."""
+        assert not os.path.isfile(out), f'Output file already exists! {out=}'
+        with open(gbk) as gbk_f, open(out, 'w') as out_f:
+            for rec in SeqIO.parse(gbk_f, 'genbank'):
+                out_f.write(f'>{rec.id}\n{str(rec.seq)}\n')
+
+    @classmethod
+    def create_gff(cls, gbk: str, out: str):
+        """Generate a GFF3 file from a GenBank file."""
+        assert not os.path.isfile(out), f'Output file already exists! {out=}'
+        strand_map = {1: '+', -1: '-', 0: '.', None: '.'}
+        with open(gbk) as gbk_f, open(out, 'w') as out_f:
+            out_f.write('##gff-version 3\n')
+            for rec in SeqIO.parse(gbk_f, 'genbank'):
+                seqid = rec.id
+                for feature in rec.features:
+                    if 'locus_tag' not in feature.qualifiers:
+                        continue
+                    locus_tag = feature.qualifiers['locus_tag'][0]
+                    product = feature.qualifiers.get('product', ['unknown'])[0].replace(';', ',').replace('=', '-')
+                    feat_type = feature.type
+                    strand = strand_map.get(feature.location.strand, '.')
+                    phase = '0' if feat_type == 'CDS' else '.'
+                    parts = getattr(feature.location, 'parts', None) or [feature.location]
+                    for part in parts:
+                        start = int(part.start) + 1
+                        end = int(part.end)
+                        attrs = f'locus_tag={locus_tag};product={product}'
+                        out_f.write(f'{seqid}\t.\t{feat_type}\t{start}\t{end}\t.\t{strand}\t{phase}\t{attrs}\n')
+
+    @classmethod
     def convert(cls, gbk, out: str, format: str, strict: bool = True):
         """
         Convert GenBank (gbk) file into protein FASTA (faa) or nucleotide FASTA (ffn)

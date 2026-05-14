@@ -1,5 +1,5 @@
 __version__ = '1.0.0'
-__folder_structure_version__ = 2
+__folder_structure_version__ = 3
 
 from .genbank_to_fasta import GenBankToFasta
 from .import_genome import import_genome

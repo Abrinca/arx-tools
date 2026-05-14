@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 
 from Bio import SeqIO, SeqRecord, SeqFeature
@@ -58,11 +59,86 @@ class GenBankFile(GenomeFile):
         if validate:
             self.validate_locus_tags(locus_tag_prefix=new_locus_tag_prefix)
 
+    def create_fna(self, fna: str):
+        GenBankToFasta.create_fna(gbk=self.path, out=fna)
+
+    def create_gff(self, gff: str):
+        GenBankToFasta.create_gff(gbk=self.path, out=gff)
+
     def create_ffn(self, ffn: str):
         GenBankToFasta.convert(gbk=self.path, out=ffn, format='ffn')
 
     def create_faa(self, faa: str):
         GenBankToFasta.convert(gbk=self.path, out=faa, format='faa')
+
+    def normalize(self, out: str, genome_id: str,
+                  contig_ids: list[str] = None,
+                  contig_format: str = '_scf{n:05d}') -> tuple[dict, dict]:
+        """
+        Canonicalize contig IDs and locus_tags in a GenBank file.
+
+        Contigs are renamed using contig_ids (if provided, matched by position) or
+        auto-generated as {genome_id}{contig_format.format(n=counter)}.
+        Locus tags are renamed to {genome_id}_{n:05d}.
+        Old identifiers are preserved as old_locus_tag qualifiers.
+
+        Returns (contig_map, lt_map) where both are {old_id: new_id} dicts.
+        """
+        lt_counter = 0
+        lt_map = {}
+        contig_map = {}
+        records = []
+
+        with open(self.path) as f:
+            all_records = list(SeqIO.parse(f, 'genbank'))
+
+        if contig_ids is not None:
+            assert len(contig_ids) == len(all_records), \
+                f'contig_ids count ({len(contig_ids)}) does not match number of records ' \
+                f'({len(all_records)}) in {self.path}'
+
+        for i, rec in enumerate(all_records):
+            if contig_ids is not None:
+                new_contig_id = contig_ids[i]
+            else:
+                new_contig_id = f'{genome_id}{contig_format.format(n=i + 1)}'
+            contig_map[rec.id] = new_contig_id
+            rec.id = new_contig_id
+            rec.name = new_contig_id[:16]  # LOCUS line is limited to 16 chars in genbank format
+
+            for feature in rec.features:
+                if 'locus_tag' not in feature.qualifiers:
+                    continue
+                old_lt = feature.qualifiers['locus_tag'][0]
+                if old_lt not in lt_map:
+                    lt_counter += 1
+                    lt_map[old_lt] = f'{genome_id}_{str(lt_counter).zfill(5)}'
+                new_lt = lt_map[old_lt]
+                feature.qualifiers['locus_tag'] = [new_lt]
+                if 'old_locus_tag' not in feature.qualifiers:
+                    feature.qualifiers['old_locus_tag'] = [old_lt]
+                elif old_lt not in feature.qualifiers['old_locus_tag']:
+                    feature.qualifiers['old_locus_tag'].append(old_lt)
+
+            records.append(rec)
+
+        with open(out, 'w') as f:
+            SeqIO.write(records, f, 'genbank')
+
+        return contig_map, lt_map
+
+    def get_contig_ids(self) -> list[str]:
+        with open(self.path) as f:
+            return [rec.id for rec in SeqIO.parse(f, 'genbank')]
+
+    def validate_contig_ids(self, genome_id: str) -> None:
+        """Check that all contig IDs match {genome_id}_scf<digits>. Raise AssertionError if not."""
+        pattern = re.compile(rf'^{re.escape(genome_id)}_scf\d+$')
+        with open(self.path) as f:
+            for rec in SeqIO.parse(f, 'genbank'):
+                assert pattern.match(rec.id), \
+                    f'Contig ID {rec.id!r} in {self.path} does not match expected format ' \
+                    f'{genome_id!r}_scf<N>. Use --rename to auto-normalize.'
 
     def validate_locus_tags(self, locus_tag_prefix: str = None):
         if locus_tag_prefix is None:
@@ -88,8 +164,7 @@ class GenBankFile(GenomeFile):
             pass
 
         rec, feature = self._get_first_gbk_rec_feature(gbk=self.path)
-        assert 'comment' in rec.annotations, f'Could not determine annotation information from {self.path=}'
-        comment = rec.annotations['comment']
+        comment = rec.annotations.get('comment', '')
         if 'prokka' in comment:
             genome_data.update(
                 cds_tool='prokka',

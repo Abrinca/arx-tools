@@ -34,9 +34,9 @@ class ImportSettings:
             {'type': 'copy', 'from': '*', 'to': '{original_path}', 'expected': True},
         ],
         'file_finder': {
-            'fna': {'glob': '*.fna', 'expected': 1},
+            'fna': {'glob': '*.fna', 'expected': False},
             'gbk': {'glob': '*.gbk', 'expected': 1},
-            'gff': {'glob': '*.gff', 'expected': 1},
+            'gff': {'glob': '*.gff', 'expected': False},
             'faa': {'glob': '*.faa', 'expected': False},
             'sqn': {'glob': '*.sqn', 'expected': False},
             'ffn': {'glob': '*.ffn', 'expected': False},
@@ -212,16 +212,20 @@ class ImportSettings:
 def autodetect_organism_genome(root_dir: str) -> (str, str):
     with WorkingDirectory(root_dir):
         gbks = glob('*.gbk')
+        last_error = None
         for gbk in gbks:
             try:
                 strain, locus_tag_prefix = GenBankFile(file=gbk).detect_strain_locus_tag_prefix()
                 organism, genome = strain, locus_tag_prefix.rstrip('_')
                 logging.info(f'autodetected from gbk: {organism=} {genome=}')
                 return organism, genome
-            except Exception:
-                pass
-    raise AssertionError(f'Failed to automatically detect organism and genome name in {gbks=}. '
-                         f'Please specify them manually.')
+            except Exception as e:
+                last_error = e
+    cause = f': {last_error}' if last_error else ''
+    raise AssertionError(
+        f'Failed to automatically detect organism and genome name from {gbks}{cause}. '
+        f'Please specify the names manually.'
+    )
 
 
 def rename_all(root_dir: str, gbk: GenBankFile, files: [GenomeFile], new_prefix: str, old_prefix: str = None):
@@ -342,6 +346,7 @@ def gather_metadata(import_settings: ImportSettings, root_dir: str, files: [Geno
     # add organism.json / genome.json from import_dir
     organism_json = merge_json(organism_json, os.path.join(import_dir, 'organism.json'))
     genome_json = merge_json(genome_json, os.path.join(import_dir, 'genome.json'))
+    genome_json.pop('contig_format', None)  # input-only config, not stored in output
 
     # add elementary identifiers
     organism_json['name'] = organism
@@ -367,8 +372,11 @@ def gather_metadata(import_settings: ImportSettings, root_dir: str, files: [Geno
     return organism_json, genome_json
 
 
-def check_files_(locus_tag_prefix, files: dict, custom_annotations: [GenomeFile]) -> None:
+def check_files_(genome_id: str, locus_tag_prefix: str, files: dict, custom_annotations: [GenomeFile]) -> None:
+    files['gbk'].validate_contig_ids(genome_id=genome_id)
     files['gbk'].validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
+    if files['fna'] is not None:
+        files['fna'].validate_contig_ids(genome_id=genome_id)
     files['gff'].validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
     files['faa'].validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
     files['ffn'].validate_locus_tags(locus_tag_prefix=locus_tag_prefix)
@@ -419,6 +427,15 @@ def import_genome(
 
     assert os.path.isdir(import_dir), f'Cannot import files: {import_dir=} does not exist.'
 
+    # Read optional contig_format from import_dir/genome.json before any processing.
+    contig_format = '_scf{n:05d}'
+    _import_gj_path = os.path.join(import_dir, 'genome.json')
+    if os.path.isfile(_import_gj_path):
+        with open(_import_gj_path) as _f:
+            _import_gj = json.load(_f)
+        if 'contig_format' in _import_gj:
+            contig_format = _import_gj['contig_format']
+
     import_settings = ImportSettings(import_settings)
 
     if organism is None or genome is None:
@@ -442,22 +459,78 @@ def import_genome(
             print(f'Files are prepared here: {work_dir} Press enter to continue with import. Press Ctrl+C to abort.')
             input()
 
-        fna: FastaFile = import_settings.find_file('fna', root_dir=work_dir, as_class=FastaFile)
         gbk: GenBankFile = import_settings.find_file('gbk', root_dir=work_dir, as_class=GenBankFile)
-        gff: GffFile = import_settings.find_file('gff', root_dir=work_dir, as_class=GffFile)
+        base = os.path.splitext(os.path.basename(gbk.path))[0]
+
+        if rename:
+            logging.info('Normalizing locus tags and contig IDs.')
+
+            # If an fna is already present, match contigs by ID (not position) so the
+            # canonical numbering follows GBK order and the fna gets renamed to match.
+            _pre_fna = import_settings.find_file('fna', root_dir=work_dir, as_class=FastaFile, expected=False)
+            if _pre_fna is not None:
+                fna_contig_ids = _pre_fna.get_contig_ids()
+                gbk_contig_ids = gbk.get_contig_ids()
+                assert set(fna_contig_ids) == set(gbk_contig_ids), (
+                    f'FNA and GBK contain different contig IDs.\n'
+                    f'  FNA only: {set(fna_contig_ids) - set(gbk_contig_ids)}\n'
+                    f'  GBK only: {set(gbk_contig_ids) - set(fna_contig_ids)}'
+                )
+                # canonical IDs numbered by GBK order (consistent with the no-fna path)
+                contig_id_map = {
+                    gbk_id: f'{genome}{contig_format.format(n=i + 1)}'
+                    for i, gbk_id in enumerate(gbk_contig_ids)
+                }
+                tmp_fna = _pre_fna.path + '.renaming'
+                _pre_fna.rename_contig_ids(out=tmp_fna, new_ids=[contig_id_map[i] for i in fna_contig_ids])
+                os.replace(tmp_fna, _pre_fna.path)
+                canonical_ids = [contig_id_map[i] for i in gbk_contig_ids]
+            else:
+                canonical_ids = None  # normalize generates them from contig_format
+
+            tmp_path = gbk.path + '.normalizing'
+            _, lt_map = gbk.normalize(out=tmp_path, genome_id=genome, contig_ids=canonical_ids, contig_format=contig_format)
+            os.replace(tmp_path, gbk.path)
+
+            # After normalization, any provided gff/faa/ffn have stale locus tags.
+            # Remove them so they are regenerated from the normalized GBK below.
+            with WorkingDirectory(work_dir):
+                for _stale_pattern in ('*.gff', '*.faa', '*.ffn'):
+                    for _stale_file in glob(_stale_pattern):
+                        logging.info(f'Removing stale derived file after normalization: {_stale_file}')
+                        os.remove(_stale_file)
+
+            # Rename custom annotations (eggnog, .GC, etc.) using the exact locus tag map.
+            for _ca in import_settings.find_custom_annotations(work_dir):
+                tmp_ca = _ca.path + '.renaming'
+                _ca.rename_by_map(out=tmp_ca, lt_map=lt_map, update_path=False)
+                os.replace(tmp_ca, _ca.path)
+                logging.info(f'Renamed locus tags in custom annotation: {_ca.path}')
+
+        fna = import_settings.find_file('fna', root_dir=work_dir, as_class=FastaFile, expected=False)
+        if fna is None:
+            logging.info('Generating .fna from .gbk.')
+            fna_path = os.path.join(work_dir, base + '.fna')
+            gbk.create_fna(fna=fna_path)
+            fna = FastaFile(fna_path)
+
+        gff = import_settings.find_file('gff', root_dir=work_dir, as_class=GffFile, expected=False)
+        if gff is None:
+            logging.info('Generating .gff from .gbk.')
+            gff_path = os.path.join(work_dir, base + '.gff')
+            gbk.create_gff(gff=gff_path)
+            gff = GffFile(gff_path)
 
         ffn = import_settings.find_file('ffn', root_dir=work_dir, as_class=FastaFile, expected=False)
         if ffn is None:
-            logging.info('Failed to auto-detect ffn.')
-            base = os.path.splitext(os.path.basename(gbk.path))[0]
+            logging.info('Generating .ffn from .gbk.')
             ffn_path = os.path.join(work_dir, base + '.ffn')
             gbk.create_ffn(ffn=ffn_path)
             ffn = FastaFile(ffn_path)
 
         faa = import_settings.find_file('faa', root_dir=work_dir, as_class=FastaFile, expected=False)
         if faa is None:
-            logging.info('Failed to auto-detect faa.')
-            base = os.path.splitext(os.path.basename(gbk.path))[0]
+            logging.info('Generating .faa from .gbk.')
             faa_path = os.path.join(work_dir, base + '.faa')
             gbk.create_faa(faa=faa_path)
             faa = FastaFile(faa_path)
@@ -468,13 +541,6 @@ def import_genome(
         files = dict(fna=fna, gbk=gbk, ffn=ffn, faa=faa, gff=gff, sqn=sqn)
 
         custom_annotations = import_settings.find_custom_annotations(work_dir)
-
-        if rename:
-            rename_all(
-                root_dir=work_dir, gbk=gbk,
-                files=[gbk, gff, faa, ffn, *custom_annotations],
-                new_prefix=f'{genome}_'
-            )
 
         organism_json, genome_json = gather_metadata(
             import_settings,
@@ -488,7 +554,7 @@ def import_genome(
         )
 
         if check_files:
-            check_files_(locus_tag_prefix=f'{genome}_', files=files, custom_annotations=custom_annotations)
+            check_files_(genome_id=genome, locus_tag_prefix=f'{genome}_', files=files, custom_annotations=custom_annotations)
 
         # final movement
         os.makedirs(os.path.dirname(genome_dir), exist_ok=True)

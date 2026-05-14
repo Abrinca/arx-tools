@@ -48,6 +48,19 @@ class EggnogFile(GenomeFile):
         if validate:
             self.validate_locus_tags(locus_tag_prefix=new_locus_tag_prefix)
 
+    def rename_by_map(self, out: str, lt_map: dict, update_path: bool = True) -> None:
+        with open(self.path) as f_in, open(out, 'w') as f_out:
+            for line in f_in:
+                if line.startswith('#') or line.strip() == '':
+                    f_out.write(line)
+                    continue
+                locus_tag, rest = line.split('\t', 1)
+                assert locus_tag in lt_map, \
+                    f'Locus tag {locus_tag!r} not found in lt_map. {self.path=}'
+                f_out.write(lt_map[locus_tag] + '\t' + rest)
+        if update_path:
+            self.path = out
+
     def detect_locus_tag_prefix(self) -> str:
         with open(self.path) as f:
             for line in f:

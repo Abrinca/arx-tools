@@ -1,3 +1,4 @@
+import re
 import logging
 
 from .utils import GenomeFile, split_locus_tag
@@ -32,6 +33,40 @@ class FastaFile(GenomeFile):
 
         if validate:
             self.validate_locus_tags(locus_tag_prefix=new_locus_tag_prefix)
+
+    def get_contig_ids(self) -> list[str]:
+        """Return contig IDs (first word of each header line) in order."""
+        ids = []
+        with open(self.path) as f:
+            for line in f:
+                if line.startswith('>'):
+                    ids.append(line[1:].split()[0])
+        return ids
+
+    def rename_contig_ids(self, out: str, new_ids: list[str], update_path: bool = True) -> None:
+        """Replace contig IDs (first word of each header) with new_ids, preserving the rest of each header line."""
+        counter = 0
+        with open(self.path) as f_in, open(out, 'w') as f_out:
+            for line in f_in:
+                if line.startswith('>'):
+                    parts = line[1:].split(' ', 1)
+                    suffix = (' ' + parts[1]) if len(parts) > 1 else '\n'
+                    f_out.write(f'>{new_ids[counter]}{suffix}')
+                    counter += 1
+                else:
+                    f_out.write(line)
+        assert counter == len(new_ids), \
+            f'Expected {len(new_ids)} contigs in {self.path}, found {counter}'
+        if update_path:
+            self.path = out
+
+    def validate_contig_ids(self, genome_id: str) -> None:
+        """Check that all contig IDs match {genome_id}_scf<digits>. Raise AssertionError if not."""
+        pattern = re.compile(rf'^{re.escape(genome_id)}_scf\d+$')
+        for contig_id in self.get_contig_ids():
+            assert pattern.match(contig_id), \
+                f'Contig ID {contig_id!r} in {self.path} does not match expected format ' \
+                f'{genome_id!r}_scf<N>. Use --rename to auto-normalize.'
 
     def detect_locus_tag_prefix(self) -> str:
         with open(self.path) as f:

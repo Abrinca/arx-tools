@@ -449,6 +449,12 @@ def import_genome(
     # genome names can consist of integers -.-
     organism, genome = str(organism), str(genome)
 
+    if not genome.startswith(organism):
+        raise ImportException(
+            f'Genome identifier ({genome!r}) must start with organism name ({organism!r}). '
+            f'Consider using {organism!r}_{genome!r} instead.'
+        )
+
     organism_dir = os.path.join(organisms_dir, organism)
     genome_dir = os.path.join(organism_dir, 'genomes', genome)
     assert not os.path.exists(genome_dir), f'Could not import {organism}:{genome}: {genome_dir=} already exists!'

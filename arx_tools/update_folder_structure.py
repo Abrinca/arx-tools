@@ -61,7 +61,7 @@ def loop_genomes(folder_structure_dir: str, skip_ignored=False, sanity_check=Fal
         try:
             has_json = genome.has_json
         except PermissionError:
-            print(f'{genome.identifier}: SKIPPED — permission denied on genome.json')
+            print(f'{genome.identifier}: SKIPPED: permission denied on genome.json')
             continue
         if has_json:
             yield genome
@@ -105,7 +105,7 @@ def _apply_lt_map_to_file(src: str, dst: str, lt_map: dict, is_eggnog: bool = Fa
     Write a locus-tag-renamed copy of a tab-separated annotation file to dst.
 
     First column of each non-comment line is the locus_tag.
-    Eggnog files may use "prefix|locus_tag" format — only the part after | is mapped.
+    Eggnog files may use "prefix|locus_tag" format: only the part after | is mapped.
     """
     with open(src) as f:
         lines = f.readlines()
@@ -206,7 +206,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
     Upgrade folder structure from v2 to v3.
 
     Per genome:
-      1. Shallow v3 check — skip if already v3; warn if a partial upgrade (.v3 files) exists.
+      1. Shallow v3 check: skip if already v3; warn if a partial upgrade (.v3 files) exists.
       2. Generate .v3 intermediate files for source files (gbk, assembly fna, annotations).
          Originals are untouched during this phase.
       3. Only once all .v3 files are successfully written: archive originals into a single
@@ -242,7 +242,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             continue
         if pre.has_pending_v3_files:
             names = ', '.join(os.path.basename(p) for p in pre.pending_files)
-            print(f'{genome_id}: WARNING — partial upgrade detected ({names}). '
+            print(f'{genome_id}: WARNING: partial upgrade detected ({names}). '
                   f'Remove .v3 files manually and re-run to retry.')
             continue
 
@@ -257,8 +257,8 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             continue
 
         base = os.path.splitext(gbk_path)[0]
-        v3_created = set()   # every .v3 path touched — for cleanup on failure
-        v3_to_orig = {}      # {v3_path: original_path} — only successful files, for promotion
+        v3_created = set()   # every .v3 path touched: for cleanup on failure
+        v3_to_orig = {}      # {v3_path: original_path}: only successful files, for promotion
         failed = False
 
         # 2a. Normalize GBK → gbk.v3
@@ -273,7 +273,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             print(f'{genome_id}: ERROR normalizing GBK: {e}')
             failed = True
 
-        # (derived files .fna/.gff/.faa/.ffn are regenerated after promotion — no .v3 needed)
+        # (derived files .fna/.gff/.faa/.ffn are regenerated after promotion: no .v3 needed)
 
         # 2c. Update assembly FNA contig headers
         if not failed and contig_map:
@@ -318,7 +318,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                     os.unlink(v3_path)
                 except OSError:
                     pass
-            print(f'{genome_id}: FAILED — original files untouched. Fix errors and re-run.')
+            print(f'{genome_id}: FAILED: original files untouched. Fix errors and re-run.')
             continue
 
         # 3. Archive originals → tar.gz, move .v3 → originals
@@ -355,7 +355,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         if post.is_v3:
             print(f'{genome_id}: done (post-check OK)')
         else:
-            print(f'{genome_id}: WARNING — post-check failed: {"; ".join(post.issues)}')
+            print(f'{genome_id}: WARNING: post-check failed: {"; ".join(post.issues)}')
 
         # 5. Delete BLAST databases and stale sequence index files
         deleted = 0

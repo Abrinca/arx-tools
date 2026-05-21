@@ -154,7 +154,7 @@ class TestCheckV3Shallow(TestCase):
             self.assertFalse(result.is_v3)
 
     def test_seven_digit_locus_tags_accepted(self):
-        """Genomes with >999,999 genes produce 7-digit tags via zfill(6) — these must pass."""
+        """Genomes with >999,999 genes produce 7-digit tags via zfill(6): these must pass."""
         with tempfile.TemporaryDirectory() as tmp:
             _setup_genome(tmp,
                           gbk_contigs=[(f'{GENOME_ID}_scf1', [f'{GENOME_ID}_1000001'])],

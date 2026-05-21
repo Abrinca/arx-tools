@@ -103,7 +103,7 @@ class TestApplyLtMapToFile(TestCase):
                 os.unlink(dst_path)
 
     def test_source_file_unchanged(self):
-        """src is never modified — only dst is written."""
+        """src is never modified: only dst is written."""
         lt_map = {'OLD_000001': 'NEW_000001'}
         original = 'OLD_000001\tK00001\n'
         with tempfile.NamedTemporaryFile(mode='w', suffix='.KG', delete=False) as src:
@@ -412,3 +412,306 @@ class TestFullUpgradeFlow(TestCase):
             # No archive created
             self.assertFalse(os.path.exists(
                 os.path.join(genome_dir, f'{GENOME_ID}_v2_backup.tar.gz')))
+
+    def test_failed_fna_update_cleans_up_all_v3_files(self):
+        """
+        If assembly FNA update raises after GBK .v3 was already written,
+        both .v3 files are cleaned up and originals are untouched.
+        """
+        from unittest.mock import patch
+        from arx_tools import update_folder_structure as ufs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._setup_v2_genome(tmp)
+            with open(os.path.join(tmp, 'version.json'), 'w') as f:
+                json.dump({'folder_structure_version': 2}, f)
+
+            gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
+            fna_path = os.path.join(genome_dir, f'{GENOME_ID}.fna')
+            original_fna = open(fna_path).read()
+
+            def bad_fna(src, dst, contig_map):
+                with open(dst, 'w') as f:
+                    f.write('partial')
+                raise RuntimeError('simulated fna error')
+
+            with (patch.object(ufs, '_apply_contig_map_to_fna', bad_fna),
+                  patch.object(ufs, 'ask'),
+                  patch.object(ufs, 'set_folder_structure_version')):
+                ufs.from_2_to_3(folder_structure_dir=tmp)
+
+            with open(fna_path) as f:
+                self.assertEqual(f.read(), original_fna)
+            self.assertFalse(os.path.exists(gbk_path + '.v3'))
+            self.assertFalse(os.path.exists(fna_path + '.v3'))
+            self.assertFalse(os.path.exists(os.path.join(genome_dir, f'{GENOME_ID}_v2_backup.tar.gz')))
+
+    def test_failed_annotation_update_cleans_up_all_v3_files(self):
+        """
+        If annotation update raises after GBK .v3 was already written,
+        all .v3 files are cleaned up and originals are untouched.
+        """
+        from unittest.mock import patch
+        from arx_tools import update_folder_structure as ufs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._setup_v2_genome(tmp)
+            with open(os.path.join(tmp, 'version.json'), 'w') as f:
+                json.dump({'folder_structure_version': 2}, f)
+
+            gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
+            ann_path = os.path.join(genome_dir, f'{GENOME_ID}.KG')
+            original_ann = open(ann_path).read()
+
+            def bad_annotation(src, dst, lt_map, **__):
+                with open(dst, 'w') as f:
+                    f.write('partial')
+                raise RuntimeError('simulated annotation error')
+
+            with (patch.object(ufs, '_apply_lt_map_to_file', bad_annotation),
+                  patch.object(ufs, 'ask'),
+                  patch.object(ufs, 'set_folder_structure_version')):
+                ufs.from_2_to_3(folder_structure_dir=tmp)
+
+            with open(ann_path) as f:
+                self.assertEqual(f.read(), original_ann)
+            self.assertFalse(os.path.exists(gbk_path + '.v3'))
+            self.assertFalse(os.path.exists(ann_path + '.v3'))
+            self.assertFalse(os.path.exists(os.path.join(genome_dir, f'{GENOME_ID}_v2_backup.tar.gz')))
+
+
+class TestCheckGenomeV3(TestCase):
+    def _setup_genome_dir(self, tmp: str, contig_ids: list[str], locus_tags_per_contig: list[list[str]],
+                          fna_contig_ids: list[str] = None, custom_annotations: list = None) -> str:
+        genome_dir = os.path.join(tmp, GENOME_ID)
+        os.makedirs(genome_dir)
+        gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
+        fna_path = os.path.join(genome_dir, f'{GENOME_ID}.fna')
+        _write_gbk(gbk_path, list(zip(contig_ids, locus_tags_per_contig)))
+        _write_fna(fna_path, fna_contig_ids if fna_contig_ids is not None else contig_ids)
+        genome_json = {
+            'identifier': GENOME_ID,
+            'cds_tool_gbk_file': f'{GENOME_ID}.gbk',
+            'assembly_fasta_file': f'{GENOME_ID}.fna',
+            'custom_annotations': custom_annotations or [],
+        }
+        with open(os.path.join(genome_dir, 'genome.json'), 'w') as f:
+            json.dump(genome_json, f)
+        return genome_dir
+
+    def _v3_genome_dir(self, tmp: str) -> str:
+        return self._setup_genome_dir(
+            tmp,
+            contig_ids=[f'{GENOME_ID}_scf1', f'{GENOME_ID}_scf2'],
+            locus_tags_per_contig=[[f'{GENOME_ID}_000001', f'{GENOME_ID}_000002'], [f'{GENOME_ID}_000003']],
+        )
+
+    def _v2_genome_dir(self, tmp: str) -> str:
+        return self._setup_genome_dir(
+            tmp,
+            contig_ids=['old_contig_1', 'old_contig_2'],
+            locus_tags_per_contig=[['OLD_00001', 'OLD_00002'], ['OLD_00003']],
+        )
+
+    def test_v3_genome_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._v3_genome_dir(tmp)
+            result = check_genome_v3(genome_dir, GENOME_ID)
+            self.assertTrue(result.is_v3)
+            self.assertFalse(result.has_pending_v3_files)
+            self.assertEqual(result.issues, [])
+
+    def test_bad_gbk_contig_ids_detected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._v2_genome_dir(tmp)
+            result = check_genome_v3(genome_dir, GENOME_ID)
+            self.assertFalse(result.is_v3)
+            self.assertTrue(any('contig' in i.lower() for i in result.issues))
+
+    def test_bad_gbk_locus_tags_detected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._v2_genome_dir(tmp)
+            result = check_genome_v3(genome_dir, GENOME_ID)
+            self.assertFalse(result.is_v3)
+            self.assertTrue(any('locus_tag' in i for i in result.issues))
+
+    def test_bad_fna_headers_detected(self):
+        """FNA with non-v3 headers fails even when GBK is already v3."""
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._setup_genome_dir(
+                tmp,
+                contig_ids=[f'{GENOME_ID}_scf1'],
+                locus_tags_per_contig=[[f'{GENOME_ID}_000001']],
+                fna_contig_ids=['old_contig_1'],
+            )
+            result = check_genome_v3(genome_dir, GENOME_ID)
+            self.assertFalse(result.is_v3)
+            self.assertTrue(any('FNA' in i for i in result.issues))
+
+    def test_pending_v3_files_detected_shallow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._v3_genome_dir(tmp)
+            gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
+            with open(gbk_path + '.v3', 'w') as f:
+                f.write('partial')
+            result = check_genome_v3(genome_dir, GENOME_ID)
+            self.assertTrue(result.has_pending_v3_files)
+            self.assertIn(gbk_path + '.v3', result.pending_files)
+
+    def test_pending_v3_annotation_detected_in_deep_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ann_file = f'{GENOME_ID}.KG'
+            genome_dir = self._setup_genome_dir(
+                tmp,
+                contig_ids=[f'{GENOME_ID}_scf1'],
+                locus_tags_per_contig=[[f'{GENOME_ID}_000001']],
+                custom_annotations=[{'file': ann_file, 'type': 'KG'}],
+            )
+            ann_path = os.path.join(genome_dir, ann_file)
+            _write_annotation(ann_path, [(f'{GENOME_ID}_000001', 'K00001')])
+            with open(ann_path + '.v3', 'w') as f:
+                f.write('partial')
+            shallow = check_genome_v3(genome_dir, GENOME_ID, deep=False)
+            self.assertFalse(shallow.has_pending_v3_files)
+            deep = check_genome_v3(genome_dir, GENOME_ID, deep=True)
+            self.assertTrue(deep.has_pending_v3_files)
+            self.assertIn(ann_path + '.v3', deep.pending_files)
+
+    def test_deep_check_detects_annotation_issues(self):
+        """Shallow check passes for a v3 GBK/FNA; deep check catches non-v3 annotation tags."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ann_file = f'{GENOME_ID}.KG'
+            genome_dir = self._setup_genome_dir(
+                tmp,
+                contig_ids=[f'{GENOME_ID}_scf1'],
+                locus_tags_per_contig=[[f'{GENOME_ID}_000001']],
+                custom_annotations=[{'file': ann_file, 'type': 'KG'}],
+            )
+            ann_path = os.path.join(genome_dir, ann_file)
+            _write_annotation(ann_path, [('OLD_00001', 'K00001')])
+            shallow = check_genome_v3(genome_dir, GENOME_ID, deep=False)
+            self.assertTrue(shallow.is_v3)
+            deep = check_genome_v3(genome_dir, GENOME_ID, deep=True)
+            self.assertFalse(deep.is_v3)
+            self.assertTrue(any(ann_file in i for i in deep.issues))
+
+    def test_missing_genome_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = os.path.join(tmp, GENOME_ID)
+            os.makedirs(genome_dir)
+            result = check_genome_v3(genome_dir, GENOME_ID)
+            self.assertFalse(result.is_v3)
+            self.assertIn('genome.json not found', result.issues)
+
+    def test_missing_gbk_on_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._v3_genome_dir(tmp)
+            os.remove(os.path.join(genome_dir, f'{GENOME_ID}.gbk'))
+            result = check_genome_v3(genome_dir, GENOME_ID)
+            self.assertFalse(result.is_v3)
+            self.assertTrue(any('GBK not found' in i for i in result.issues))
+
+    def test_summary_v3_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._v3_genome_dir(tmp)
+            result = check_genome_v3(genome_dir, GENOME_ID)
+            self.assertIn('v3 OK', result.summary(GENOME_ID))
+            self.assertIn(GENOME_ID, result.summary(GENOME_ID))
+
+    def test_summary_not_v3(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._v2_genome_dir(tmp)
+            result = check_genome_v3(genome_dir, GENOME_ID)
+            summary = result.summary(GENOME_ID)
+            self.assertIn('NOT v3', summary)
+            self.assertIn(GENOME_ID, summary)
+
+    def test_summary_partial_upgrade(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._v3_genome_dir(tmp)
+            gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
+            with open(gbk_path + '.v3', 'w') as f:
+                f.write('partial')
+            result = check_genome_v3(genome_dir, GENOME_ID)
+            self.assertIn('PARTIAL', result.summary(GENOME_ID))
+
+
+class TestFrom2To3SkipPaths(TestCase):
+    def _setup_fs(self, tmp: str, gbk_contig_ids: list[str] = None,
+                  gbk_locus_tags: list[list[str]] = None) -> str:
+        """Create a minimal folder structure with one genome and version.json."""
+        os.makedirs(os.path.join(tmp, 'organisms', GENOME_ID, 'genomes', GENOME_ID))
+        genome_dir = os.path.join(tmp, 'organisms', GENOME_ID, 'genomes', GENOME_ID)
+        gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
+        fna_path = os.path.join(genome_dir, f'{GENOME_ID}.fna')
+        contig_ids = gbk_contig_ids or ['old_contig_1']
+        locus_tags = gbk_locus_tags or [['OLD_00001', 'OLD_00002']]
+        _write_gbk(gbk_path, list(zip(contig_ids, locus_tags)))
+        _write_fna(fna_path, contig_ids)
+        genome_json = {
+            'identifier': GENOME_ID,
+            'cds_tool_gbk_file': f'{GENOME_ID}.gbk',
+            'assembly_fasta_file': f'{GENOME_ID}.fna',
+            'custom_annotations': [],
+        }
+        with open(os.path.join(genome_dir, 'genome.json'), 'w') as f:
+            json.dump(genome_json, f)
+        with open(os.path.join(tmp, 'version.json'), 'w') as f:
+            json.dump({'folder_structure_version': 2}, f)
+        return genome_dir
+
+    def _run(self, tmp: str) -> None:
+        from unittest.mock import patch
+        from arx_tools import update_folder_structure as ufs
+        with (patch.object(ufs, 'ask'),
+              patch.object(ufs, 'set_folder_structure_version')):
+            ufs.from_2_to_3(folder_structure_dir=tmp)
+
+    def test_already_v3_is_skipped(self):
+        """A genome whose GBK/FNA already use v3 IDs is skipped without creating any files."""
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._setup_fs(
+                tmp,
+                gbk_contig_ids=[f'{GENOME_ID}_scf1'],
+                gbk_locus_tags=[[f'{GENOME_ID}_000001', f'{GENOME_ID}_000002']],
+            )
+            fna_path = os.path.join(genome_dir, f'{GENOME_ID}.fna')
+            _write_fna(fna_path, [f'{GENOME_ID}_scf1'])
+            self._run(tmp)
+            for fname in os.listdir(genome_dir):
+                self.assertFalse(fname.endswith('.v3'), f'Unexpected .v3 file: {fname}')
+            self.assertFalse(os.path.exists(os.path.join(genome_dir, f'{GENOME_ID}_v2_backup.tar.gz')))
+
+    def test_partial_upgrade_is_skipped(self):
+        """If a .v3 file already exists the genome is warned and skipped; originals are untouched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._setup_fs(tmp)
+            gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
+            original_content = open(gbk_path).read()
+            with open(gbk_path + '.v3', 'w') as f:
+                f.write('leftover')
+            self._run(tmp)
+            with open(gbk_path) as f:
+                self.assertEqual(f.read(), original_content)
+            self.assertFalse(os.path.exists(os.path.join(genome_dir, f'{GENOME_ID}_v2_backup.tar.gz')))
+
+    def test_missing_cds_tool_gbk_file_is_skipped(self):
+        """Genome with no cds_tool_gbk_file key in genome.json is skipped."""
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._setup_fs(tmp)
+            json_path = os.path.join(genome_dir, 'genome.json')
+            with open(json_path) as f:
+                gj = json.load(f)
+            del gj['cds_tool_gbk_file']
+            with open(json_path, 'w') as f:
+                json.dump(gj, f)
+            self._run(tmp)
+            self.assertFalse(os.path.exists(os.path.join(genome_dir, f'{GENOME_ID}_v2_backup.tar.gz')))
+
+    def test_gbk_file_not_found_on_disk_is_skipped(self):
+        """Genome whose GBK path in genome.json doesn't exist on disk is skipped."""
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._setup_fs(tmp)
+            os.remove(os.path.join(genome_dir, f'{GENOME_ID}.gbk'))
+            self._run(tmp)
+            self.assertFalse(os.path.exists(os.path.join(genome_dir, f'{GENOME_ID}_v2_backup.tar.gz')))

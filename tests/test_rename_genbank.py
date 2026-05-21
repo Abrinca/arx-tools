@@ -116,7 +116,7 @@ class Test(TestCase):
                 ('contig_B', ['OLD_00001']),
                 ('contig_A', ['OLD_00002']),
             ])
-            # FNA order: [contig_A, contig_B]  — deliberately reversed
+            # FNA order: [contig_A, contig_B] deliberately reversed
             _write_fna(fna_path, [
                 ('contig_A', 'topology=linear coverage=50x'),
                 ('contig_B', 'topology=circular coverage=200x'),

@@ -22,10 +22,10 @@ class V3CheckResult:
     def summary(self, genome_id: str) -> str:
         if self.has_pending_v3_files:
             names = ', '.join(os.path.basename(f) for f in self.pending_files)
-            return f'{genome_id}: PARTIAL UPGRADE — .v3 files exist but not promoted: {names}'
+            return f'{genome_id}: PARTIAL UPGRADE: .v3 files exist but not promoted: {names}'
         if self.is_v3:
             return f'{genome_id}: v3 OK'
-        return f'{genome_id}: NOT v3 — {"; ".join(self.issues)}'
+        return f'{genome_id}: NOT v3: {"; ".join(self.issues)}'
 
 
 def check_genome_v3(

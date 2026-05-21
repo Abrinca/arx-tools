@@ -10,7 +10,6 @@ class GenBankToFasta:
     @classmethod
     def create_fna(cls, gbk: str, out: str):
         """Extract contig sequences from a GenBank file into a FASTA file."""
-        assert not os.path.isfile(out), f'Output file already exists! {out=}'
         with open(gbk) as gbk_f, open(out, 'w') as out_f:
             for rec in SeqIO.parse(gbk_f, 'genbank'):
                 out_f.write(f'>{rec.id}\n{str(rec.seq)}\n')
@@ -18,7 +17,6 @@ class GenBankToFasta:
     @classmethod
     def create_gff(cls, gbk: str, out: str):
         """Generate a GFF3 file from a GenBank file."""
-        assert not os.path.isfile(out), f'Output file already exists! {out=}'
         strand_map = {1: '+', -1: '-', 0: '.', None: '.'}
         with open(gbk) as gbk_f, open(out, 'w') as out_f:
             out_f.write('##gff-version 3\n')

@@ -49,7 +49,7 @@ class FastaFile(GenomeFile):
         with open(self.path) as f_in, open(out, 'w') as f_out:
             for line in f_in:
                 if line.startswith('>'):
-                    parts = line[1:].split(' ', 1)
+                    parts = line[1:].split(None, 1)
                     suffix = (' ' + parts[1]) if len(parts) > 1 else '\n'
                     f_out.write(f'>{new_ids[counter]}{suffix}')
                     counter += 1

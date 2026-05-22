@@ -82,25 +82,25 @@ def from_1_to_2(folder_structure_dir: str = None, skip_ignored=False, sanity_che
             print(f'{genome.identifier}: already has COG in genome.json')
             continue
 
-        COG = {}  # default
+        cog = {}  # default
 
         eggnog_files = [f for f in genome_json['custom_annotations'] if f['type'].startswith('eggnog')]
         for file in eggnog_files:
             path = os.path.join(genome.path, file['file'])
             try:
-                COG = EggnogFile(file=path).cog_categories()
+                cog = EggnogFile(file=path).cog_categories()
             except AssertionError as e:
                 logging.info(msg=str(e))
                 pass
 
-        print(f'{genome.identifier}: adding COG={COG}')
-        genome_json['COG'] = COG
+        print(f'{genome.identifier}: adding COG={cog}')
+        genome_json['COG'] = cog
         genome.replace_json(genome_json)
 
     set_folder_structure_version(new_version=v_to, folder_structure_dir=folder_structure_dir)
 
 
-def _apply_lt_map_to_file(src: str, dst: str, lt_map: dict, is_eggnog: bool = False) -> None:
+def _apply_gene_tag_map_to_file(src: str, dst: str, gene_tag_map: dict, is_eggnog: bool = False) -> None:
     """
     Write a locus-tag-renamed copy of a tab-separated annotation file to dst.
 
@@ -119,16 +119,16 @@ def _apply_lt_map_to_file(src: str, dst: str, lt_map: dict, is_eggnog: bool = Fa
         raw_tag = cols[0]
         if is_eggnog and '|' in raw_tag:
             prefix, locus_tag = raw_tag.rsplit('|', 1)
-            new_tag = f'{prefix}|{lt_map.get(locus_tag, locus_tag)}'
+            new_tag = f'{prefix}|{gene_tag_map.get(locus_tag, locus_tag)}'
         else:
-            new_tag = lt_map.get(raw_tag, raw_tag)
+            new_tag = gene_tag_map.get(raw_tag, raw_tag)
         result.append(new_tag + ('\t' + cols[1] if len(cols) > 1 else '\n'))
 
     with open(dst, 'w') as f:
         f.writelines(result)
 
 
-def _apply_lt_map_to_fasta(src: str, dst: str, lt_map: dict) -> int:
+def _apply_gene_tag_map_to_fasta(src: str, dst: str, gene_tag_map: dict) -> int:
     """Write a locus-tag-renamed copy of a FASTA file to dst. Returns rename count."""
     with open(src) as f:
         lines = f.readlines()
@@ -137,10 +137,10 @@ def _apply_lt_map_to_fasta(src: str, dst: str, lt_map: dict) -> int:
     for line in lines:
         if line.startswith('>'):
             parts = line[1:].split(None, 1)
-            old_lt = parts[0]
-            if old_lt in lt_map:
+            old_gene_tag = parts[0]
+            if old_gene_tag in gene_tag_map:
                 rest = (' ' + parts[1]) if len(parts) > 1 else '\n'
-                line = f'>{lt_map[old_lt]}{rest}'
+                line = f'>{gene_tag_map[old_gene_tag]}{rest}'
                 renamed += 1
         result.append(line)
     with open(dst, 'w') as f:
@@ -236,12 +236,12 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         genome_id = genome.identifier
 
         # 1. Shallow check
-        pre = check_genome_v3(genome.path, genome_id, deep=False, contig_format=contig_format)
-        if pre.is_v3:
+        pre_check = check_genome_v3(genome.path, genome_id, deep=False, contig_format=contig_format)
+        if pre_check.is_v3:
             print(f'{genome_id}: already v3, skipping')
             continue
-        if pre.has_pending_v3_files:
-            names = ', '.join(os.path.basename(p) for p in pre.pending_files)
+        if pre_check.has_pending_v3_files:
+            names = ', '.join(os.path.basename(p) for p in pre_check.pending_files)
             print(f'{genome_id}: WARNING: partial upgrade detected ({names}). '
                   f'Remove .v3 files manually and re-run to retry.')
             continue
@@ -256,7 +256,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             print(f'{genome_id}: GBK not found at {gbk_path}, skipping')
             continue
 
-        base = os.path.splitext(gbk_path)[0]
+        gbk_stem = os.path.splitext(gbk_path)[0]
         v3_created = set()   # every .v3 path touched: for cleanup on failure
         v3_to_orig = {}      # {v3_path: original_path}: only successful files, for promotion
         failed = False
@@ -265,10 +265,10 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         gbk_v3 = gbk_path + '.v3'
         v3_created.add(gbk_v3)
         try:
-            contig_map, lt_map = GenBankFile(gbk_path).normalize(
+            contig_map, gene_tag_map = GenBankFile(gbk_path).normalize(
                 out=gbk_v3, genome_id=genome_id, contig_format=contig_format)
             v3_to_orig[gbk_v3] = gbk_path
-            print(f'{genome_id}: created {os.path.basename(gbk_v3)} ({len(lt_map)} locus tags renamed)')
+            print(f'{genome_id}: created {os.path.basename(gbk_v3)} ({len(gene_tag_map)} locus tags renamed)')
         except Exception as e:
             print(f'{genome_id}: ERROR normalizing GBK: {e}')
             failed = True
@@ -292,24 +292,24 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                         failed = True
 
         # 2d. Update custom annotation files
-        if not failed and lt_map:
-            ca_count = 0
-            for ca in genome_json.get('custom_annotations', []):
-                ca_path = os.path.join(genome.path, ca['file'])
-                if not os.path.exists(ca_path):
-                    print(f'{genome_id}: custom annotation not found: {ca["file"]}, skipping')
+        if not failed and gene_tag_map:
+            annotation_count = 0
+            for annotation in genome_json.get('custom_annotations', []):
+                annotation_path = os.path.join(genome.path, annotation['file'])
+                if not os.path.exists(annotation_path):
+                    print(f'{genome_id}: custom annotation not found: {annotation["file"]}, skipping')
                     continue
-                ca_v3 = ca_path + '.v3'
-                v3_created.add(ca_v3)
+                annotation_v3 = annotation_path + '.v3'
+                v3_created.add(annotation_v3)
                 try:
-                    _apply_lt_map_to_file(ca_path, ca_v3, lt_map, is_eggnog=ca['type'].startswith('eggnog'))
-                    v3_to_orig[ca_v3] = ca_path
-                    ca_count += 1
+                    _apply_gene_tag_map_to_file(annotation_path, annotation_v3, gene_tag_map, is_eggnog=annotation['type'].startswith('eggnog'))
+                    v3_to_orig[annotation_v3] = annotation_path
+                    annotation_count += 1
                 except Exception as e:
-                    print(f'{genome_id}: ERROR updating {ca["file"]}: {e}')
+                    print(f'{genome_id}: ERROR updating {annotation["file"]}: {e}')
                     failed = True
-            if ca_count:
-                print(f'{genome_id}: created .v3 for {ca_count} annotation file(s)')
+            if annotation_count:
+                print(f'{genome_id}: created .v3 for {annotation_count} annotation file(s)')
 
         # On failure: clean up every .v3 file we may have created, leave originals untouched
         if failed:
@@ -330,10 +330,10 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         gbk_final = GenBankFile(gbk_path)
         for ext, apply_fn, create_fn in [
             ('.fna', lambda p: _apply_contig_map_to_fna(p, p + '.new', contig_map), gbk_final.create_fna),
-            ('.faa', lambda p: _apply_lt_map_to_fasta(p, p + '.new', lt_map), gbk_final.create_faa),
-            ('.ffn', lambda p: _apply_lt_map_to_fasta(p, p + '.new', lt_map), gbk_final.create_ffn),
+            ('.faa', lambda p: _apply_gene_tag_map_to_fasta(p, p + '.new', gene_tag_map), gbk_final.create_faa),
+            ('.ffn', lambda p: _apply_gene_tag_map_to_fasta(p, p + '.new', gene_tag_map), gbk_final.create_ffn),
         ]:
-            out = base + ext
+            out = gbk_stem + ext
             try:
                 if os.path.exists(out):
                     apply_fn(out)
@@ -342,7 +342,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                     create_fn(out)
             except Exception as e:
                 print(f'{genome_id}: ERROR updating {ext}: {e}')
-        gff_path = base + '.gff'
+        gff_path = gbk_stem + '.gff'
         if os.path.exists(gff_path):
             os.remove(gff_path)
         try:
@@ -351,11 +351,11 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             print(f'{genome_id}: ERROR regenerating .gff: {e}')
 
         # 4. Post-check
-        post = check_genome_v3(genome.path, genome_id, deep=False, contig_format=contig_format)
-        if post.is_v3:
+        post_check = check_genome_v3(genome.path, genome_id, deep=False, contig_format=contig_format)
+        if post_check.is_v3:
             print(f'{genome_id}: done (post-check OK)')
         else:
-            print(f'{genome_id}: WARNING: post-check failed: {"; ".join(post.issues)}')
+            print(f'{genome_id}: WARNING: post-check failed: {"; ".join(post_check.issues)}')
 
         # 5. Delete BLAST databases and stale sequence index files
         deleted = 0

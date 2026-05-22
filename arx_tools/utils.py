@@ -229,9 +229,25 @@ def split_locus_tag(locus_tag: str) -> (str, str):
 
 
 def contig_format_to_regex(contig_format: str) -> str:
-    """Convert a contig_format string like '_scf{n:05d}' to a regex suffix like '_scf\\d+'."""
-    parts = re.split(r'\{[^}]+\}', contig_format)
-    return r'\d+'.join(re.escape(part) for part in parts)
+    """Convert a contig_format string like '_scf{n}' to a regex suffix.
+
+    Plain {n} or {n:d} → rejects leading zeros, so '_scf0001' does not match.
+    Zero-padded specs like {n:05d} → accepts any digit string (\\d+).
+    """
+    # Split on {spec} placeholders, capturing the spec content
+    parts = re.split(r'\{([^}]*)\}', contig_format)
+    # parts = [literal0, spec0, literal1, spec1, literal2, ...]
+    result = re.escape(parts[0])
+    for i in range(1, len(parts), 2):
+        spec = parts[i]
+        literal = parts[i + 1] if i + 1 < len(parts) else ''
+        # Zero-padded if spec contains a zero-fill like '0Nd' (e.g. ':05d', ':04d')
+        if re.search(r'0\d*d', spec):
+            result += r'\d+'
+        else:
+            result += r'(?:[1-9]\d*|0)'
+        result += re.escape(literal)
+    return result
 
 
 def create_replace_function(replace_map: {str: str}) -> Callable:

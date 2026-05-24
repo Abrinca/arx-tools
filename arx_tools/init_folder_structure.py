@@ -7,7 +7,7 @@ from . import __folder_structure_version__
 
 
 def download_go_data(out: str) -> None:
-    source_url = 'http://purl.obolibrary.org/obo/go.obo'
+    source_url = 'https://current.geneontology.org/ontology/go.obo'
 
     print(f'Converting {source_url} -> {out}')
 
@@ -117,38 +117,47 @@ def init_folder_structure(folder_structure_dir: str = None) -> None:
 
     assert os.path.isdir(
         os.path.dirname(folder_structure_dir)), f'Parent dir of {folder_structure_dir=} does not exist!'
-    assert not os.path.exists(folder_structure_dir), f'Error: {folder_structure_dir=} already exist!'
 
     # make main dir
-    os.makedirs(folder_structure_dir)
+    os.makedirs(folder_structure_dir, exist_ok=True)
 
     # set version
-    with open(f'{folder_structure_dir}/version.json', 'w') as f:
-        json.dump({'folder_structure_version': __folder_structure_version__}, f, indent=4)
+    version_file = f'{folder_structure_dir}/version.json'
+    if not os.path.exists(version_file):
+        with open(version_file, 'w') as f:
+            json.dump({'folder_structure_version': __folder_structure_version__}, f, indent=4)
 
     # make organisms dir (empty)
-    os.makedirs(f'{folder_structure_dir}/organisms')
+    os.makedirs(f'{folder_structure_dir}/organisms', exist_ok=True)
 
     # make orthologs dir (empty)
-    os.makedirs(f'{folder_structure_dir}/orthologs')
+    os.makedirs(f'{folder_structure_dir}/orthologs', exist_ok=True)
 
     # make pathway maps dir and content
-    os.makedirs(f'{folder_structure_dir}/pathway-maps')
-    os.makedirs(f'{folder_structure_dir}/pathway-maps/svg')
-    with open(f'{folder_structure_dir}/pathway-maps/type_dictionary.json', 'w') as f:
-        f.write('{}')
+    os.makedirs(f'{folder_structure_dir}/pathway-maps/svg', exist_ok=True)
+    type_dict = f'{folder_structure_dir}/pathway-maps/type_dictionary.json'
+    if not os.path.exists(type_dict):
+        with open(type_dict, 'w') as f:
+            f.write('{}')
 
     # Create annotations.json
-    shutil.copy(src=f'{PACKAGE_ROOT}/data/annotations.json', dst=f'{folder_structure_dir}/annotations.json')
+    annotations_dst = f'{folder_structure_dir}/annotations.json'
+    if not os.path.exists(annotations_dst):
+        shutil.copy(src=f'{PACKAGE_ROOT}/data/annotations.json', dst=annotations_dst)
 
-    # download annotation descriptions
+    # download annotation descriptions (skip files that already exist)
     annotation_descriptions_dir = f'{folder_structure_dir}/annotation-descriptions'
-    os.makedirs(annotation_descriptions_dir)
-    download_sl_data(out=f'{annotation_descriptions_dir}/SL.tsv')
-    download_kegg_data(src='rn', out=f'{annotation_descriptions_dir}/KR.tsv', remove_prefix='rn:')
-    download_kegg_data(src='ko', out=f'{annotation_descriptions_dir}/KG.tsv', remove_prefix='ko:')
-    download_kegg_data(src='enzyme', out=f'{annotation_descriptions_dir}/EC.tsv', remove_prefix='ec:', add_prefix='EC:')
-    download_go_data(out=f'{annotation_descriptions_dir}/GO.tsv')
+    os.makedirs(annotation_descriptions_dir, exist_ok=True)
+    if not os.path.exists(f'{annotation_descriptions_dir}/SL.tsv'):
+        download_sl_data(out=f'{annotation_descriptions_dir}/SL.tsv')
+    if not os.path.exists(f'{annotation_descriptions_dir}/KR.tsv'):
+        download_kegg_data(src='rn', out=f'{annotation_descriptions_dir}/KR.tsv', remove_prefix='rn:')
+    if not os.path.exists(f'{annotation_descriptions_dir}/KG.tsv'):
+        download_kegg_data(src='ko', out=f'{annotation_descriptions_dir}/KG.tsv', remove_prefix='ko:')
+    if not os.path.exists(f'{annotation_descriptions_dir}/EC.tsv'):
+        download_kegg_data(src='enzyme', out=f'{annotation_descriptions_dir}/EC.tsv', remove_prefix='ec:', add_prefix='EC:')
+    if not os.path.exists(f'{annotation_descriptions_dir}/GO.tsv'):
+        download_go_data(out=f'{annotation_descriptions_dir}/GO.tsv')
 
 
 def main():

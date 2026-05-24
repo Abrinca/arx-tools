@@ -8,7 +8,7 @@ from Bio import SeqIO
 
 from .utils import contig_format_to_regex
 
-_LT_DIGITS = 6
+_GENE_DIGITS = 6
 _DEFAULT_CONTIG_FORMAT = '_scf{n}'
 
 
@@ -55,7 +55,7 @@ def check_genome_v3(
     with open(json_path) as f:
         genome_json = json.load(f)
 
-    lt_pattern = re.compile(rf'^{re.escape(genome_id)}_\d{{{_LT_DIGITS},}}$')
+    gene_pattern = re.compile(rf'^{re.escape(genome_id)}_\d{{{_GENE_DIGITS},}}$')
     contig_pattern = re.compile(rf'^{re.escape(genome_id)}{contig_format_to_regex(contig_format)}$')
 
     gbk_filename = genome_json.get('cds_tool_gbk_file')
@@ -82,7 +82,7 @@ def check_genome_v3(
             result.is_v3 = False
             result.issues.append(f'GBK not found: {gbk_filename}')
         else:
-            _check_gbk(gbk_path, lt_pattern, contig_pattern, result)
+            _check_gbk(gbk_path, gene_pattern, contig_pattern, result)
 
     # Check assembly FNA
     if asm_filename:
@@ -96,7 +96,7 @@ def check_genome_v3(
             ca_path = os.path.join(genome_dir, ca['file'])
             if os.path.exists(ca_path):
                 is_eggnog = ca['type'].startswith('eggnog')
-                _check_annotation(ca_path, lt_pattern, is_eggnog, result)
+                _check_annotation(ca_path, gene_pattern, is_eggnog, result)
 
     return result
 

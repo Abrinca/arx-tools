@@ -301,7 +301,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
     derived_action = (
         'regenerate derived files (.fna, .gff, .faa, .ffn) from GBK (--create_from_file)'
         if create_from_file else
-        'rename IDs in-place in derived files (.fna, .gff, .faa, .ffn), preserving custom content'
+        'generate .v3 for existing derived files (.fna, .gff, .faa, .ffn); promote all .v3 files together'
     )
     ask(
         v_from=2, v_to=3,
@@ -358,7 +358,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             print(f'{genome_id}: ERROR normalizing GBK: {e}')
             failed = True
 
-        # 2b. (derived files .fna/.gff/.faa/.ffn are updated after promotion; no .v3 intermediate needed)
+        # 2b. (derived files .fna/.gff/.faa/.ffn get .v3 intermediates in step 2e below)
 
         # 2c. Update assembly FNA contig headers
         if not failed and contig_map:
@@ -402,6 +402,26 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             if annotation_count:
                 print(f'{genome_id}: created .v3 for {annotation_count} annotation file(s)')
 
+        # 2e. Create .v3 for existing derived files (skipped when create_from_file, as they'll be regenerated).
+        if not failed and not create_from_file:
+            for ext, apply_fn in [
+                ('.fna', lambda src, dst: _apply_contig_map_to_fna(src, dst, contig_map)),
+                ('.gff', lambda src, dst: _apply_maps_to_gff(src, dst, contig_map, gene_tag_map)),
+                ('.faa', lambda src, dst: _apply_gene_tag_map_to_fasta(src, dst, gene_tag_map)),
+                ('.ffn', lambda src, dst: _apply_gene_tag_map_to_fasta(src, dst, gene_tag_map)),
+            ]:
+                orig_path = gbk_stem + ext
+                if os.path.exists(orig_path):
+                    v3_path = orig_path + '.v3'
+                    v3_created.add(v3_path)
+                    try:
+                        apply_fn(orig_path, v3_path)
+                        v3_to_orig[v3_path] = orig_path
+                        print(f'{genome_id}: created {os.path.basename(v3_path)}')
+                    except Exception as e:
+                        print(f'{genome_id}: ERROR creating {os.path.basename(v3_path)}: {e}')
+                        failed = True
+
         # On failure: clean up every .v3 file we may have created, leave originals untouched
         if failed:
             for v3_path in v3_created:
@@ -413,36 +433,29 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             continue
 
         # 3. Archive originals → tar.gz, move .v3 → originals.
-        #    Also include any existing derived files in the backup; they have no .v3 intermediate
-        #    and will be modified in-place in step 3b.
-        derived_backup = [gbk_stem + ext for ext in ('.fna', '.gff', '.faa', '.ffn')]
+        #    For create_from_file=True, also back up derived files as extras (no .v3 intermediate, will be regenerated).
+        extra_backup = [gbk_stem + ext for ext in ('.fna', '.gff', '.faa', '.ffn')] if create_from_file else None
         archive = _promote_v3_files(v3_to_orig, genome_dir=genome.path, genome_id=genome_id,
-                                    extra_backup=derived_backup)
+                                    extra_backup=extra_backup)
         print(f'{genome_id}: archived originals → {os.path.basename(archive)}')
 
-        # 3b. Update derived files: rename IDs/locus-tags in-place to preserve custom content.
-        #     With create_from_file=True, regenerate all from the GBK instead.
-        gbk_final = GenBankFile(gbk_path)
-        for ext, apply_fn, create_fn in [
-            ('.fna', lambda p: _apply_contig_map_to_fna(p, p + '.new', contig_map), gbk_final.create_fna),
-            ('.gff', lambda p: _apply_maps_to_gff(p, p + '.new', contig_map, gene_tag_map), gbk_final.create_gff),
-            ('.faa', lambda p: _apply_gene_tag_map_to_fasta(p, p + '.new', gene_tag_map), gbk_final.create_faa),
-            ('.ffn', lambda p: _apply_gene_tag_map_to_fasta(p, p + '.new', gene_tag_map), gbk_final.create_ffn),
-        ]:
-            out = gbk_stem + ext
-            try:
-                if os.path.exists(out) and not create_from_file:
-                    apply_fn(out)
-                    os.replace(out + '.new', out)
-                else:
+        # 3b. For create_from_file=True: regenerate all derived files from the normalized GBK.
+        #     For create_from_file=False: derived .v3 files were already promoted in step 3.
+        if create_from_file:
+            gbk_final = GenBankFile(gbk_path)
+            for ext, create_fn in [
+                ('.fna', gbk_final.create_fna),
+                ('.gff', gbk_final.create_gff),
+                ('.faa', gbk_final.create_faa),
+                ('.ffn', gbk_final.create_ffn),
+            ]:
+                out = gbk_stem + ext
+                try:
                     if os.path.exists(out):
                         os.remove(out)
                     create_fn(out)
-            except Exception as e:
-                print(f'{genome_id}: ERROR updating {ext}: {e}')
-                tmp = out + '.new'
-                if os.path.exists(tmp):
-                    os.remove(tmp)
+                except Exception as e:
+                    print(f'{genome_id}: ERROR creating {ext}: {e}')
 
         # 4. Post-check
         post_check = check_genome_v3(genome.path, genome_id, deep=False, contig_format=contig_format)

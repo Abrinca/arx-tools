@@ -10,7 +10,7 @@ from Bio.SeqFeature import SeqFeature, FeatureLocation
 from Bio import SeqIO
 
 from arx_tools.update_folder_structure import (
-    _apply_lt_map_to_file,
+    _apply_gene_tag_map_to_file,
     _apply_contig_map_to_fna,
     _promote_v3_files,
 )
@@ -55,7 +55,7 @@ class TestApplyLtMapToFile(TestCase):
             src_path = src.name
         dst_path = src_path + '.out'
         try:
-            _apply_lt_map_to_file(src_path, dst_path, lt_map)
+            _apply_gene_tag_map_to_file(src_path, dst_path, lt_map)
             with open(dst_path) as f:
                 content = f.read()
             self.assertIn('NEW_000001\tK00001', content)
@@ -74,7 +74,7 @@ class TestApplyLtMapToFile(TestCase):
             src_path = src.name
         dst_path = src_path + '.out'
         try:
-            _apply_lt_map_to_file(src_path, dst_path, lt_map, is_eggnog=True)
+            _apply_gene_tag_map_to_file(src_path, dst_path, lt_map, is_eggnog=True)
             with open(dst_path) as f:
                 content = f.read()
             self.assertIn('2WKGQ|NEW_000001', content)
@@ -92,7 +92,7 @@ class TestApplyLtMapToFile(TestCase):
             src_path = src.name
         dst_path = src_path + '.out'
         try:
-            _apply_lt_map_to_file(src_path, dst_path, lt_map)
+            _apply_gene_tag_map_to_file(src_path, dst_path, lt_map)
             with open(dst_path) as f:
                 content = f.read()
             self.assertIn('NEW_000001', content)
@@ -111,7 +111,7 @@ class TestApplyLtMapToFile(TestCase):
             src_path = src.name
         dst_path = src_path + '.out'
         try:
-            _apply_lt_map_to_file(src_path, dst_path, lt_map)
+            _apply_gene_tag_map_to_file(src_path, dst_path, lt_map)
             with open(src_path) as f:
                 self.assertEqual(f.read(), original)
         finally:
@@ -339,7 +339,7 @@ class TestFullUpgradeFlow(TestCase):
             ann_path = os.path.join(genome_dir, f'{GENOME_ID}.KG')
 
             # --- Generate .v3 files ---
-            from arx_tools.update_folder_structure import _apply_lt_map_to_file, _apply_contig_map_to_fna, _promote_v3_files
+            from arx_tools.update_folder_structure import _apply_gene_tag_map_to_file as _apply_gene_tag_map_to_file, _apply_contig_map_to_fna, _promote_v3_files
 
             gbk_v3 = gbk_path + '.v3'
             contig_map, lt_map = GenBankFile(gbk_path).normalize(out=gbk_v3, genome_id=GENOME_ID)
@@ -350,7 +350,7 @@ class TestFullUpgradeFlow(TestCase):
 
             # Annotation
             ann_v3 = ann_path + '.v3'
-            _apply_lt_map_to_file(ann_path, ann_v3, lt_map)
+            _apply_gene_tag_map_to_file(ann_path, ann_v3, lt_map)
 
             v3_to_orig = {
                 gbk_v3: gbk_path,
@@ -468,7 +468,7 @@ class TestFullUpgradeFlow(TestCase):
                     f.write('partial')
                 raise RuntimeError('simulated annotation error')
 
-            with (patch.object(ufs, '_apply_lt_map_to_file', bad_annotation),
+            with (patch.object(ufs, '_apply_gene_tag_map_to_file', bad_annotation),
                   patch.object(ufs, 'ask'),
                   patch.object(ufs, 'set_folder_structure_version')):
                 ufs.from_2_to_3(folder_structure_dir=tmp)

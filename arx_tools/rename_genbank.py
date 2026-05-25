@@ -249,9 +249,10 @@ class GenBankFile(GenomeFile):
         else:
             strain = os.environ.get('STRAIN', None)
             if strain is None:
-                logging.warning(f'Could not read organism from .gbk file! {strain=}')
-                strain = input(f'Could not read organism from .gbk file! Please enter it manually and press enter:')
-                logging.warning(f'This organism name was manually chosen: {strain}')
+                raise AssertionError(
+                    f'Could not read organism/strain from .gbk file {self.path!r}. '
+                    f'Set the STRAIN environment variable or specify --organism manually.'
+                )
 
         locus_tag_prefix, gene_id = split_locus_tag(locus_tag[0])
         assert type(locus_tag_prefix) is str and type(strain) is str

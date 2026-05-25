@@ -105,8 +105,6 @@ class ImportSettings:
             files = glob(from_)
             cls.check_expected(files, expected, from_)
             for src in files:
-                if 'calls' in src:
-                    print('wait')
                 rel_dst = cls._format_path(to, genome, organism, src)
                 dst = os.path.join(target_dir, rel_dst)
                 if os.path.isdir(dst):

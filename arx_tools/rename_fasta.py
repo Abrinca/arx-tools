@@ -1,3 +1,4 @@
+import os
 import re
 import logging
 
@@ -61,33 +62,48 @@ class FastaFile(GenomeFile):
             self.path = out
 
     def validate_contig_ids(self, genome_id: str, contig_format: str = '_scf{n}') -> None:
-        """Check that all contig IDs match {genome_id}{contig_format}. Raise AssertionError if not."""
+        """Check that all contig IDs match {genome_id}{contig_format}. Raise ValueError if not."""
         pattern = re.compile(rf'^{re.escape(genome_id)}{contig_format_to_regex(contig_format)}$')
         for contig_id in self.get_contig_ids():
-            assert pattern.match(contig_id), \
-                f'Contig ID {contig_id!r} in {self.path} does not match expected format ' \
-                f'{genome_id!r}{contig_format!r}. Use --rename to auto-normalize.'
+            if not pattern.match(contig_id):
+                raise ValueError(
+                    f'Contig ID {contig_id!r} in {os.path.basename(self.path)!r} does not match '
+                    f'expected format {genome_id!r} + {contig_format!r} '
+                    f'(e.g. {genome_id!r}_scf1). '
+                    f'Use rename mode to normalize (--rename on CLI, '
+                    f'"Rename locus tags and contig IDs" in web UI).'
+                )
 
     def detect_locus_tag_prefix(self) -> str:
         with open(self.path) as f:
             for line in f:
                 if not line.startswith('>'):
-                    assert line.strip() == '', f'Could not extract locus_tag from {self.path=}, it does not start with a header line!'
+                    assert line.strip() == '', \
+                        f'Could not extract locus_tag from {os.path.basename(self.path)!r}: does not start with a header line!'
                     continue
                 locus_tag_prefix, gene_id = self.parse_fasta_header(line)
                 return locus_tag_prefix
 
         raise KeyError(
-            f'Could not extract locus_tag from {self.path=}, it does not appear to contain a header line (>)!')
+            f'Could not extract locus_tag from {os.path.basename(self.path)!r}: no header line (>) found!')
 
     def validate_locus_tags(self, locus_tag_prefix: str = None):
         with open(self.path) as f:
             for line in f:
                 if line.startswith('>'):
                     real_locus_tag_prefix, gene_id = self.parse_fasta_header(header=line)
-                assert real_locus_tag_prefix == locus_tag_prefix, \
-                    f'locus_tag_prefix in {self.path=} does not match. expected: {locus_tag_prefix} reality: {real_locus_tag_prefix}'
-                assert gene_id.isdigit(), f'locus_tag in {self.path=} is malformed. gene_id is expected to be: [0-9]+ reality: {gene_id}'
+                    if real_locus_tag_prefix != locus_tag_prefix:
+                        raise ValueError(
+                            f'Locus tag prefix in {os.path.basename(self.path)!r} does not match: '
+                            f'expected {locus_tag_prefix!r}, found {real_locus_tag_prefix!r}. '
+                            f'Use rename mode to normalize (--rename on CLI, '
+                            f'"Rename locus tags and contig IDs" in web UI).'
+                        )
+                    if not gene_id.isdigit():
+                        raise ValueError(
+                            f'Malformed locus tag in {os.path.basename(self.path)!r}: '
+                            f'expected {locus_tag_prefix!r}_[0-9]+, found gene ID {gene_id!r}.'
+                        )
 
     @staticmethod
     def parse_fasta_header(header: str) -> (str, str):

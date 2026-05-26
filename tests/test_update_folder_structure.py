@@ -11,8 +11,11 @@ from Bio import SeqIO
 
 from arx_tools.update_folder_structure import (
     _apply_gene_tag_map_to_file,
+    _apply_gene_tag_map_to_fasta,
     _apply_contig_map_to_fna,
+    _apply_maps_to_gff,
     _promote_v3_files,
+    _extend_gene_tag_map,
 )
 from arx_tools.check_v3 import check_genome_v3
 from arx_tools.rename_genbank import GenBankFile
@@ -97,6 +100,27 @@ class TestApplyLtMapToFile(TestCase):
                 content = f.read()
             self.assertIn('NEW_000001', content)
             self.assertIn('UNKNOWN_TAG', content)
+        finally:
+            os.unlink(src_path)
+            if os.path.exists(dst_path):
+                os.unlink(dst_path)
+
+    def test_identity_map_does_not_warn(self):
+        """
+        When locus tags are already v3 but contig IDs still need renaming,
+        normalize() produces an identity gene_tag_map.  The annotation file's tags
+        are found in the map (even though nothing changes), so matched > 0 and
+        no spurious 'no locus tags matched' warning is triggered.
+        """
+        lt_map = {'OLD_000001': 'OLD_000001'}  # identity
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.KG', delete=False) as src:
+            src.write('OLD_000001\tK00001\nOLD_000002\tK00002\n')
+            src_path = src.name
+        dst_path = src_path + '.out'
+        try:
+            matched, total = _apply_gene_tag_map_to_file(src_path, dst_path, lt_map)
+            self.assertEqual(total, 2)
+            self.assertEqual(matched, 1)  # OLD_000001 found; OLD_000002 not in map
         finally:
             os.unlink(src_path)
             if os.path.exists(dst_path):
@@ -715,3 +739,315 @@ class TestFrom2To3SkipPaths(TestCase):
             os.remove(os.path.join(genome_dir, f'{GENOME_ID}.gbk'))
             self._run(tmp)
             self.assertFalse(os.path.exists(os.path.join(genome_dir, f'{GENOME_ID}_v2_backup.tar.gz')))
+
+
+class TestApplyMapsToGff(TestCase):
+    def _write(self, path, lines):
+        with open(path, 'w') as f:
+            f.writelines(lines)
+
+    def _roundtrip(self, lines, contig_map, gene_tag_map):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.gff', delete=False) as src:
+            src.writelines(lines)
+            src_path = src.name
+        dst_path = src_path + '.out'
+        try:
+            changed = _apply_maps_to_gff(src_path, dst_path, contig_map, gene_tag_map)
+            with open(dst_path) as f:
+                content = f.read()
+            return content, changed
+        finally:
+            os.unlink(src_path)
+            if os.path.exists(dst_path):
+                os.unlink(dst_path)
+
+    def test_data_line_contig_and_locus_tag_renamed(self):
+        line = 'old_scf1\t.\tCDS\t1\t9\t.\t+\t0\tID=OLD_000001;locus_tag=OLD_000001\n'
+        content, changed = self._roundtrip(
+            [line],
+            contig_map={'old_scf1': 'NEW_scf1'},
+            gene_tag_map={'OLD_000001': 'NEW_000001'},
+        )
+        self.assertIn('NEW_scf1\t', content)
+        self.assertIn('NEW_000001', content)
+        self.assertNotIn('old_scf1', content)
+        self.assertNotIn('OLD_000001', content)
+        self.assertEqual(changed, 1)
+
+    def test_sequence_region_pragma_renamed(self):
+        lines = ['##gff-version 3\n', '##sequence-region old_scf1 1 1000\n']
+        content, _ = self._roundtrip(lines, contig_map={'old_scf1': 'NEW_scf1'}, gene_tag_map={})
+        self.assertIn('##sequence-region NEW_scf1 1 1000', content)
+        self.assertNotIn('old_scf1', content)
+
+    def test_embedded_fasta_contig_renamed(self):
+        lines = ['##gff-version 3\n', '##FASTA\n', '>old_scf1 desc\n', 'ATCG\n']
+        content, _ = self._roundtrip(lines, contig_map={'old_scf1': 'NEW_scf1'}, gene_tag_map={})
+        self.assertIn('>NEW_scf1 desc', content)
+        self.assertNotIn('>old_scf1', content)
+        self.assertIn('ATCG', content)
+
+    def test_unmapped_values_preserved(self):
+        line = 'old_scf1\t.\tCDS\t1\t9\t.\t+\t0\tID=OLD_000001\n'
+        content, changed = self._roundtrip(
+            [line],
+            contig_map={'other_scf': 'X'},
+            gene_tag_map={'OTHER_000001': 'Y'},
+        )
+        self.assertIn('old_scf1', content)
+        self.assertIn('OLD_000001', content)
+        self.assertEqual(changed, 0)
+
+    def test_short_lines_passed_through_unchanged(self):
+        """Lines with fewer than 9 tab-separated columns are not modified."""
+        line = 'old_scf1\t.\tgene\n'
+        content, _ = self._roundtrip([line], contig_map={'old_scf1': 'NEW_scf1'}, gene_tag_map={})
+        self.assertEqual(content, line)
+
+    def test_source_file_unchanged(self):
+        original = 'old_scf1\t.\tCDS\t1\t9\t.\t+\t0\tID=foo\n'
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.gff', delete=False) as src:
+            src.write(original)
+            src_path = src.name
+        dst_path = src_path + '.out'
+        try:
+            _apply_maps_to_gff(src_path, dst_path, {'old_scf1': 'NEW_scf1'}, {})
+            with open(src_path) as f:
+                self.assertEqual(f.read(), original)
+        finally:
+            os.unlink(src_path)
+            if os.path.exists(dst_path):
+                os.unlink(dst_path)
+
+
+class TestApplyGeneTagMapToFasta(TestCase):
+    def _roundtrip(self, content, gene_tag_map):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.faa', delete=False) as src:
+            src.write(content)
+            src_path = src.name
+        dst_path = src_path + '.out'
+        try:
+            count = _apply_gene_tag_map_to_fasta(src_path, dst_path, gene_tag_map)
+            with open(dst_path) as f:
+                result = f.read()
+            return result, count
+        finally:
+            os.unlink(src_path)
+            if os.path.exists(dst_path):
+                os.unlink(dst_path)
+
+    def test_basic_rename(self):
+        result, count = self._roundtrip(
+            '>OLD_000001 some product\nMPKL\n',
+            {'OLD_000001': 'NEW_000001'},
+        )
+        self.assertEqual(count, 1)
+        self.assertIn('>NEW_000001 some product', result)
+        self.assertNotIn('>OLD_', result)
+
+    def test_description_preserved(self):
+        result, _ = self._roundtrip(
+            '>OLD_000001 hypothetical protein [Organism X]\nMPKL\n',
+            {'OLD_000001': 'NEW_000001'},
+        )
+        self.assertIn('hypothetical protein [Organism X]', result)
+
+    def test_unmapped_tag_unchanged(self):
+        result, count = self._roundtrip('>OLD_000001\nMPKL\n', {'OTHER': 'NEW'})
+        self.assertEqual(count, 0)
+        self.assertIn('>OLD_000001', result)
+
+    def test_sequence_lines_not_modified(self):
+        """Sequence lines that look like a locus tag are never touched."""
+        result, _ = self._roundtrip(
+            '>OLD_000001\nOLD_000001\n',
+            {'OLD_000001': 'NEW_000001'},
+        )
+        lines = result.splitlines()
+        self.assertEqual(lines[1], 'OLD_000001')
+
+    def test_source_file_unchanged(self):
+        original = '>OLD_000001\nMPKL\n'
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.faa', delete=False) as src:
+            src.write(original)
+            src_path = src.name
+        dst_path = src_path + '.out'
+        try:
+            _apply_gene_tag_map_to_fasta(src_path, dst_path, {'OLD_000001': 'NEW_000001'})
+            with open(src_path) as f:
+                self.assertEqual(f.read(), original)
+        finally:
+            os.unlink(src_path)
+            if os.path.exists(dst_path):
+                os.unlink(dst_path)
+
+
+class TestVersionBumpBehavior(TestCase):
+    def _setup_fs(self, tmp: str) -> str:
+        genome_dir = os.path.join(tmp, 'organisms', GENOME_ID, 'genomes', GENOME_ID)
+        os.makedirs(genome_dir)
+        gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
+        fna_path = os.path.join(genome_dir, f'{GENOME_ID}.fna')
+        _write_gbk(gbk_path, [('old_contig_1', ['OLD_00001', 'OLD_00002'])])
+        _write_fna(fna_path, ['old_contig_1'])
+        genome_json = {
+            'identifier': GENOME_ID,
+            'cds_tool_gbk_file': f'{GENOME_ID}.gbk',
+            'assembly_fasta_file': f'{GENOME_ID}.fna',
+            'custom_annotations': [],
+        }
+        with open(os.path.join(genome_dir, 'genome.json'), 'w') as f:
+            json.dump(genome_json, f)
+        with open(os.path.join(tmp, 'version.json'), 'w') as f:
+            json.dump({'folder_structure_version': 2}, f)
+        return genome_dir
+
+    def test_version_not_bumped_when_genome_fails(self):
+        """set_folder_structure_version must NOT be called if any genome fails."""
+        from unittest.mock import patch, MagicMock
+        from arx_tools import update_folder_structure as ufs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_fs(tmp)
+
+            def bad_normalize(self_gbk, out, **__):
+                with open(out, 'w') as f:
+                    f.write('partial')
+                raise RuntimeError('simulated error')
+
+            mock_set_version = MagicMock()
+            with (patch.object(GenBankFile, 'normalize', bad_normalize),
+                  patch.object(ufs, 'ask'),
+                  patch.object(ufs, 'set_folder_structure_version', mock_set_version)):
+                ufs.from_2_to_3(folder_structure_dir=tmp)
+
+            mock_set_version.assert_not_called()
+
+    def test_version_bumped_on_full_success(self):
+        """version.json is updated to 3 when all genomes migrate without errors."""
+        from unittest.mock import patch
+        from arx_tools import update_folder_structure as ufs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_fs(tmp)
+            with patch.object(ufs, 'ask'):
+                ufs.from_2_to_3(folder_structure_dir=tmp)
+
+            with open(os.path.join(tmp, 'version.json')) as f:
+                version_data = json.load(f)
+            self.assertEqual(version_data['folder_structure_version'], 3)
+
+
+class TestExtendGeneTagMap(TestCase):
+    def test_adds_five_digit_variant(self):
+        """5-digit variant of each v3 tag is added as a key mapping to the same v3 tag."""
+        extended = _extend_gene_tag_map({'NCBI_RS001': f'{GENOME_ID}_000001'})
+        self.assertEqual(extended['NCBI_RS001'], f'{GENOME_ID}_000001')
+        self.assertEqual(extended.get(f'{GENOME_ID}_00001'), f'{GENOME_ID}_000001')
+
+    def test_no_extra_entry_when_five_digit_already_present(self):
+        """If the 5-digit key already exists (Prokka-style GBK), no extra entry is added."""
+        gene_map = {f'{GENOME_ID}_00001': f'{GENOME_ID}_000001'}
+        extended = _extend_gene_tag_map(gene_map)
+        self.assertEqual(len(extended), len(gene_map))
+
+    def test_number_above_99999_not_added(self):
+        """Numbers > 99999 already occupy 6 digits; no 5-digit variant is generated."""
+        extended = _extend_gene_tag_map({'OLD': f'{GENOME_ID}_100001'})
+        self.assertNotIn(f'{GENOME_ID}_100001', set(extended) - {'OLD'})
+
+    def test_empty_map_returns_empty(self):
+        self.assertEqual(_extend_gene_tag_map({}), {})
+
+    def test_complex_genome_id_prefix(self):
+        """Genome IDs containing dots and hyphens (e.g. NCBI accession style) are handled."""
+        genome_id = 'MOD1-EC5552_GCF_002228865.1_ASM222886v1'
+        extended = _extend_gene_tag_map({'BEG76_RS26710': f'{genome_id}_000001'})
+        self.assertEqual(extended.get(f'{genome_id}_00001'), f'{genome_id}_000001')
+
+
+class TestArxAssignedLocusTagsInAnnotations(TestCase):
+    """
+    When the GBK holds external locus tags (e.g. NCBI RefSeq IDs) but annotation
+    files and derived FASTA files were generated using arx-assigned 5-digit locus
+    tags, the extended map must rename those tags to v3 6-digit format.
+    """
+
+    def _make_file(self, content: str, suffix: str) -> str:
+        f = tempfile.NamedTemporaryFile(mode='w', suffix=suffix, delete=False)
+        f.write(content)
+        f.close()
+        return f.name
+
+    def _roundtrip(self, src_path: str, lt_map: dict, is_eggnog: bool = False) -> str:
+        dst_path = src_path + '.out'
+        try:
+            _apply_gene_tag_map_to_file(src_path, dst_path, lt_map, is_eggnog=is_eggnog)
+            with open(dst_path) as f:
+                return f.read()
+        finally:
+            if os.path.exists(dst_path):
+                os.unlink(dst_path)
+
+    def test_arx_five_digit_in_regular_annotation(self):
+        """AR-type (and other regular) annotation files with 5-digit arx locus tags are renamed."""
+        lt_map = _extend_gene_tag_map({'NCBI_TAG': f'{GENOME_ID}_000001'})
+        src = self._make_file(f'{GENOME_ID}_00001\tAR:blaNDM-1\n', '.AR')
+        try:
+            content = self._roundtrip(src, lt_map)
+            self.assertIn(f'{GENOME_ID}_000001', content)
+            self.assertNotIn(f'{GENOME_ID}_00001', content)
+        finally:
+            os.unlink(src)
+
+    def test_arx_five_digit_in_eggnog_with_pipe_prefix(self):
+        """Old-style eggnog files with gnl|extdb| prefix and 5-digit arx locus tags are renamed."""
+        lt_map = _extend_gene_tag_map({'NCBI_TAG': f'{GENOME_ID}_000001'})
+        src = self._make_file(f'#query_name\theader\ngnl|extdb|{GENOME_ID}_00001\tdata\n', '.annotations')
+        try:
+            content = self._roundtrip(src, lt_map, is_eggnog=True)
+            self.assertIn(f'gnl|extdb|{GENOME_ID}_000001', content)
+            self.assertNotIn(f'{GENOME_ID}_00001', content)
+        finally:
+            os.unlink(src)
+
+    def test_arx_five_digit_in_eggnog_without_pipe(self):
+        """eggnog-2.1.2 files with bare 5-digit arx locus tags (no pipe) are renamed."""
+        lt_map = _extend_gene_tag_map({'NCBI_TAG': f'{GENOME_ID}_000001'})
+        src = self._make_file(f'#query\theader\n{GENOME_ID}_00001\tdata\n', '.annotations')
+        try:
+            content = self._roundtrip(src, lt_map, is_eggnog=True)
+            self.assertIn(f'{GENOME_ID}_000001', content)
+            self.assertNotIn(f'{GENOME_ID}_00001\t', content)
+        finally:
+            os.unlink(src)
+
+    def test_arx_five_digit_in_fasta(self):
+        """FAA/FFN files with 5-digit arx locus tags in headers are renamed."""
+        lt_map = _extend_gene_tag_map({'NCBI_TAG': f'{GENOME_ID}_000001'})
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.faa', delete=False) as f:
+            f.write(f'>{GENOME_ID}_00001 some product\nMPKL\n')
+            src_path = f.name
+        dst_path = src_path + '.out'
+        try:
+            count = _apply_gene_tag_map_to_fasta(src_path, dst_path, lt_map)
+            self.assertEqual(count, 1)
+            with open(dst_path) as f:
+                content = f.read()
+            self.assertIn(f'>{GENOME_ID}_000001', content)
+            self.assertNotIn(f'>{GENOME_ID}_00001', content)
+        finally:
+            os.unlink(src_path)
+            if os.path.exists(dst_path):
+                os.unlink(dst_path)
+
+    def test_no_false_match_when_prokka_style_gbk(self):
+        """When GBK already uses arx-style locus tags, direct lookup still works."""
+        gene_map = {f'{GENOME_ID}_00001': f'{GENOME_ID}_000001'}
+        lt_map = _extend_gene_tag_map(gene_map)
+        src = self._make_file(f'{GENOME_ID}_00001\tK00001\n', '.KG')
+        try:
+            content = self._roundtrip(src, lt_map)
+            self.assertIn(f'{GENOME_ID}_000001', content)
+        finally:
+            os.unlink(src)

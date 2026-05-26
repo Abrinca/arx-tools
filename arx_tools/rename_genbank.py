@@ -132,13 +132,18 @@ class GenBankFile(GenomeFile):
             return [rec.id for rec in SeqIO.parse(f, 'genbank')]
 
     def validate_contig_ids(self, genome_id: str, contig_format: str = '_scf{n}') -> None:
-        """Check that all contig IDs match {genome_id}{contig_format}. Raise AssertionError if not."""
+        """Check that all contig IDs match {genome_id}{contig_format}. Raise ValueError if not."""
         pattern = re.compile(rf'^{re.escape(genome_id)}{contig_format_to_regex(contig_format)}$')
         with open(self.path) as f:
             for rec in SeqIO.parse(f, 'genbank'):
-                assert pattern.match(rec.id), \
-                    f'Contig ID {rec.id!r} in {self.path} does not match expected format ' \
-                    f'{genome_id!r}{contig_format!r}. Use --rename to auto-normalize.'
+                if not pattern.match(rec.id):
+                    raise ValueError(
+                        f'Contig ID {rec.id!r} in {os.path.basename(self.path)!r} does not match '
+                        f'expected format {genome_id!r} + {contig_format!r} '
+                        f'(e.g. {genome_id!r}_scf1). '
+                        f'Use rename mode to normalize (--rename on CLI, '
+                        f'"Rename locus tags and contig IDs" in web UI).'
+                    )
 
     def validate_locus_tags(self, locus_tag_prefix: str = None):
         if locus_tag_prefix is None:
@@ -151,9 +156,18 @@ class GenBankFile(GenomeFile):
                     if locus_tag is not None:
                         locus_tag = locus_tag[0]
                         real_locus_tag_prefix, gene_id = split_locus_tag(locus_tag)
-                        assert real_locus_tag_prefix == locus_tag_prefix, \
-                            f'locus_tag_prefix in {self.path=} does not match. expected: {locus_tag_prefix} reality: {real_locus_tag_prefix}'
-                        assert gene_id.isdigit(), f'locus_tag in {self.path=} is malformed. expected: {locus_tag_prefix}_[0-9]+ reality: {locus_tag}'
+                        if real_locus_tag_prefix != locus_tag_prefix:
+                            raise ValueError(
+                                f'Locus tag prefix in {os.path.basename(self.path)!r} does not match: '
+                                f'expected {locus_tag_prefix!r}, found {real_locus_tag_prefix!r}. '
+                                f'Use rename mode to normalize (--rename on CLI, '
+                                f'"Rename locus tags and contig IDs" in web UI).'
+                            )
+                        if not gene_id.isdigit():
+                            raise ValueError(
+                                f'Malformed locus tag {locus_tag!r} in {os.path.basename(self.path)!r}: '
+                                f'expected format {locus_tag_prefix!r}_[0-9]+.'
+                            )
 
     def metadata(self) -> (dict, dict):
         organism_data, genome_data = {}, {}

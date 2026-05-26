@@ -14,14 +14,17 @@ from .utils import query_yes_no, get_folder_structure_version
 
 def _get_folder_structure_dir(folder_structure_dir: str = None) -> str:
     if folder_structure_dir is None:
-        assert 'FOLDER_STRUCTURE' in os.environ, f'Cannot find the folder_structure. Please set --folder_structure_dir or environment variable FOLDER_STRUCTURE'
+        if 'FOLDER_STRUCTURE' not in os.environ:
+            raise ValueError('Cannot find the folder_structure. Please set --folder_structure_dir or environment variable FOLDER_STRUCTURE')
         folder_structure_dir = os.environ['FOLDER_STRUCTURE']
-    assert os.path.isdir(folder_structure_dir), f'Could not find the folder_structure. Folder does not exist: {folder_structure_dir}'
+    if not os.path.isdir(folder_structure_dir):
+        raise ValueError(f'Could not find the folder_structure. Folder does not exist: {folder_structure_dir}')
     return folder_structure_dir
 
 
 def set_folder_structure_version(new_version: int, folder_structure_dir: str) -> None:
-    assert type(folder_structure_dir) is str
+    if not isinstance(folder_structure_dir, str):
+        raise TypeError(f'folder_structure_dir must be str, got {type(folder_structure_dir).__name__}')
     version_file = f'{folder_structure_dir}/version.json'
 
     with open(version_file) as f:
@@ -37,18 +40,21 @@ def set_folder_structure_version(new_version: int, folder_structure_dir: str) ->
 
 
 def ask(v_from: int, v_to: int, actions: [str], folder_structure_dir: str):
-    assert type(folder_structure_dir) is str
+    if not isinstance(folder_structure_dir, str):
+        raise TypeError(f'folder_structure_dir must be str, got {type(folder_structure_dir).__name__}')
 
     current_version = get_folder_structure_version(folder_structure_dir)
-    assert current_version == v_from, \
-        f'Cannot proceed: Folder structure version mismatch.\n' \
-        f'This script expects version {v_from}, but folder_structure/version.json says version {current_version}.'
+    if current_version != v_from:
+        raise ValueError(
+            f'Cannot proceed: Folder structure version mismatch.\n'
+            f'This script expects version {v_from}, but folder_structure/version.json says version {current_version}.'
+        )
 
     question = f'Upgrade folder structure from version {v_from} to {v_to}:'
     for action in actions:
         question += f'\n - {action}'
     question += '\n\nProceed?'
-    if not query_yes_no(question=question, default='yes'):
+    if not query_yes_no(question=question, default=None):
         exit(1)
 
 
@@ -112,7 +118,7 @@ def _apply_gene_tag_map_to_file(src: str, dst: str, gene_tag_map: dict, is_eggno
     with open(src) as f:
         lines = f.readlines()
 
-    found = total = 0
+    matched = total = 0
     result = []
     for line in lines:
         if line.startswith('#') or not line.strip():
@@ -123,19 +129,51 @@ def _apply_gene_tag_map_to_file(src: str, dst: str, gene_tag_map: dict, is_eggno
         raw_tag = cols[0]
         if is_eggnog and '|' in raw_tag:
             prefix, locus_tag = raw_tag.rsplit('|', 1)
-            mapped = gene_tag_map.get(locus_tag, locus_tag)
-            if mapped != locus_tag:
-                found += 1
-            new_tag = f'{prefix}|{mapped}'
+            if locus_tag in gene_tag_map:
+                matched += 1
+                new_tag = f'{prefix}|{gene_tag_map[locus_tag]}'
+            else:
+                new_tag = raw_tag
         else:
-            new_tag = gene_tag_map.get(raw_tag, raw_tag)
-            if new_tag != raw_tag:
-                found += 1
+            if raw_tag in gene_tag_map:
+                matched += 1
+                new_tag = gene_tag_map[raw_tag]
+            else:
+                new_tag = raw_tag
         result.append(new_tag + ('\t' + cols[1] if len(cols) > 1 else '\n'))
 
     with open(dst, 'w') as f:
         f.writelines(result)
-    return found, total
+    return matched, total
+
+
+def _extend_gene_tag_map(gene_tag_map: dict) -> dict:
+    """
+    Return a copy of gene_tag_map extended with 5-digit-padded variant keys.
+
+    Annotation files and derived FASTA files (FAA/FFN) may have been generated
+    against arx-assigned 5-digit locus tags (e.g. GENOME_ID_00001) even when the
+    source GBK stores external locus tags such as NCBI RefSeq IDs.  In those cases
+    gene_tag_map only maps NCBI_TAG → GENOME_ID_000001 and a direct lookup of
+    GENOME_ID_00001 fails.  This function adds GENOME_ID_00001 → GENOME_ID_000001
+    entries derived from the v3 values already in gene_tag_map so those files can
+    be renamed correctly.
+    """
+    extended = dict(gene_tag_map)
+    for v3_tag in gene_tag_map.values():
+        sep = v3_tag.rfind('_')
+        if sep < 0:
+            continue
+        digits_str = v3_tag[sep + 1:]
+        if not digits_str.isdigit() or len(digits_str) < 6:
+            continue
+        number = int(digits_str)
+        if number > 99999:
+            continue
+        five_digit_key = v3_tag[:sep + 1] + f'{number:05d}'
+        if five_digit_key not in extended:
+            extended[five_digit_key] = v3_tag
+    return extended
 
 
 def _apply_gene_tag_map_to_fasta(src: str, dst: str, gene_tag_map: dict) -> int:
@@ -316,6 +354,10 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         folder_structure_dir=folder_structure_dir,
     )
 
+    succeeded = 0
+    failed_count = 0
+    post_check_failed = []
+
     for genome in loop_genomes(folder_structure_dir=folder_structure_dir, skip_ignored=skip_ignored):
         genome_json = genome.json
         genome_id = genome.identifier
@@ -358,7 +400,11 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             print(f'{genome_id}: ERROR normalizing GBK: {e}')
             failed = True
 
-        # 2b. (derived files .fna/.gff/.faa/.ffn get .v3 intermediates in step 2e below)
+        # 2b. Build extended map so annotation/derived files that use arx-assigned
+        #     5-digit locus tags (e.g. GENOME_ID_00001) are also covered when the
+        #     GBK stores external/NCBI locus tags.
+        if not failed:
+            extended_gene_tag_map = _extend_gene_tag_map(gene_tag_map)
 
         # 2c. Update assembly FNA contig headers
         if not failed and contig_map:
@@ -382,6 +428,9 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             annotation_count = 0
             for annotation in genome_json.get('custom_annotations', []):
                 annotation_path = os.path.join(genome.path, annotation['file'])
+                if not os.path.realpath(annotation_path).startswith(os.path.realpath(genome.path) + os.sep):
+                    print(f'{genome_id}: WARNING: annotation path escapes genome dir, skipping: {annotation["file"]}')
+                    continue
                 if not os.path.exists(annotation_path):
                     print(f'{genome_id}: custom annotation not found: {annotation["file"]}, skipping')
                     continue
@@ -390,10 +439,10 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                 annotation_v3 = annotation_path + '.v3'
                 v3_created.add(annotation_v3)
                 try:
-                    found, total = _apply_gene_tag_map_to_file(annotation_path, annotation_v3, gene_tag_map, is_eggnog=is_eggnog)
+                    found, total = _apply_gene_tag_map_to_file(annotation_path, annotation_v3, extended_gene_tag_map, is_eggnog=is_eggnog)
                     if total > 0 and found == 0:
                         print(f'{genome_id}: WARNING: {annotation["file"]} (type={ann_type!r}): '
-                              f'no locus tags matched — file may be in an unsupported format or use a different column')
+                              f'no locus tags matched: file may be in an unsupported format or use a different column')
                     v3_to_orig[annotation_v3] = annotation_path
                     annotation_count += 1
                 except Exception as e:
@@ -406,9 +455,9 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         if not failed and not create_from_file:
             for ext, apply_fn in [
                 ('.fna', lambda src, dst: _apply_contig_map_to_fna(src, dst, contig_map)),
-                ('.gff', lambda src, dst: _apply_maps_to_gff(src, dst, contig_map, gene_tag_map)),
-                ('.faa', lambda src, dst: _apply_gene_tag_map_to_fasta(src, dst, gene_tag_map)),
-                ('.ffn', lambda src, dst: _apply_gene_tag_map_to_fasta(src, dst, gene_tag_map)),
+                ('.gff', lambda src, dst: _apply_maps_to_gff(src, dst, contig_map, extended_gene_tag_map)),
+                ('.faa', lambda src, dst: _apply_gene_tag_map_to_fasta(src, dst, extended_gene_tag_map)),
+                ('.ffn', lambda src, dst: _apply_gene_tag_map_to_fasta(src, dst, extended_gene_tag_map)),
             ]:
                 orig_path = gbk_stem + ext
                 if os.path.exists(orig_path):
@@ -430,6 +479,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                 except OSError:
                     pass
             print(f'{genome_id}: FAILED: original files untouched. Fix errors and re-run.')
+            failed_count += 1
             continue
 
         # 3. Archive originals → tar.gz, move .v3 → originals.
@@ -441,6 +491,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
 
         # 3b. For create_from_file=True: regenerate all derived files from the normalized GBK.
         #     For create_from_file=False: derived .v3 files were already promoted in step 3.
+        create_from_file_error = False
         if create_from_file:
             gbk_final = GenBankFile(gbk_path)
             for ext, create_fn in [
@@ -456,13 +507,19 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                     create_fn(out)
                 except Exception as e:
                     print(f'{genome_id}: ERROR creating {ext}: {e}')
+                    create_from_file_error = True
 
         # 4. Post-check
         post_check = check_genome_v3(genome.path, genome_id, deep=False, contig_format=contig_format)
-        if post_check.is_v3:
+        if post_check.is_v3 and not create_from_file_error:
             print(f'{genome_id}: done (post-check OK)')
+            succeeded += 1
         else:
-            print(f'{genome_id}: WARNING: post-check failed: {"; ".join(post_check.issues)}')
+            reasons = '; '.join(post_check.issues)
+            if create_from_file_error:
+                reasons = ('derived file regeneration error(s)' + ('; ' + reasons if reasons else '')).rstrip('; ')
+            print(f'{genome_id}: WARNING: post-check failed: {reasons}')
+            post_check_failed.append(genome_id)
 
         # 5. Delete BLAST databases and stale sequence index files
         deleted = 0
@@ -479,7 +536,14 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                 os.remove(idx_path)
                 print(f'{genome_id}: deleted stale assembly FASTA index')
 
-    set_folder_structure_version(new_version=3, folder_structure_dir=folder_structure_dir)
+    print(f'\nSummary: {succeeded} migrated, {failed_count} failed pre-check, {len(post_check_failed)} failed post-check')
+    if failed_count > 0 or post_check_failed:
+        if post_check_failed:
+            print(f'Not bumping to version 3: post-check failures: {", ".join(post_check_failed)}. Fix and re-run.')
+        else:
+            print('Not bumping to version 3: fix errors and re-run.')
+    else:
+        set_folder_structure_version(new_version=3, folder_structure_dir=folder_structure_dir)
 
 
 def check_v3(folder_structure_dir: str = None, genome_dir: str = None, genome_id: str = None,

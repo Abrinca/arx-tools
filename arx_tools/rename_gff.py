@@ -1,3 +1,5 @@
+import os
+
 from .utils import GenomeFile, create_replace_function, split_locus_tag
 
 
@@ -63,8 +65,13 @@ class GffFile(GenomeFile):
                     real_locus_tag_prefix, gene_id = self._extract_gff_locus_tag(line)
                 except NoLocusTagInGffLine:
                     continue  # in PGAP gffs, some lines contain no locus_tag
-                assert real_locus_tag_prefix == locus_tag_prefix, \
-                    f'locus_tag_prefix in {self.path=} does not match. expected: {locus_tag_prefix} reality: {real_locus_tag_prefix}'
+                if real_locus_tag_prefix != locus_tag_prefix:
+                    raise ValueError(
+                        f'Locus tag prefix in {os.path.basename(self.path)!r} does not match: '
+                        f'expected {locus_tag_prefix!r}, found {real_locus_tag_prefix!r}. '
+                        f'Use rename mode to normalize (--rename on CLI, '
+                        f'"Rename locus tags and contig IDs" in web UI).'
+                    )
 
     @staticmethod
     def _extract_gff_data(line: str) -> dict:

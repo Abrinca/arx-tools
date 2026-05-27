@@ -315,7 +315,7 @@ def _promote_v3_files(v3_to_orig: dict, genome_dir: str, genome_id: str,
 
 
 def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_format: str = '_scf{n}',
-                create_from_file: bool = False):
+                create_from_file: bool = False, create_only: bool = False):
     """
     Upgrade folder structure from v2 to v3.
 
@@ -329,6 +329,9 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
           custom content. With --create_from_file, regenerate all derived files from the GBK.
       4. Post-check to verify success.
       5. Delete BLAST databases (they reference stale contig/locus IDs).
+
+    Pass --create_only to stop after step 2 (generate .v3 files) without promoting them.
+    Inspect the generated files, then re-run without --create_only to finish the upgrade.
     """
     folder_structure_dir = _get_folder_structure_dir(folder_structure_dir)
 
@@ -341,16 +344,25 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         if create_from_file else
         'generate .v3 for existing derived files (.fna, .gff, .faa, .ffn); promote all .v3 files together'
     )
-    ask(
-        v_from=2, v_to=3,
-        actions=[
+    if create_only:
+        actions = [
+            'shallow-check each genome; skip if already v3',
+            'generate .v3 intermediate files for source files (gbk, assembly fna, annotations)',
+            derived_action.split(';')[0].strip() if not create_from_file else derived_action,
+            '(promotion skipped — re-run without --create_only to archive originals and promote)',
+        ]
+    else:
+        actions = [
             'shallow-check each genome; skip if already v3',
             'generate .v3 intermediate files for source files (gbk, assembly fna, annotations)',
             'archive originals into {genome_id}_v2_backup.tar.gz and promote .v3 files into place',
             derived_action,
             'post-check each genome to verify',
             'delete BLAST databases (will be rebuilt on next import)',
-        ],
+        ]
+    ask(
+        v_from=2, v_to=3,
+        actions=actions,
         folder_structure_dir=folder_structure_dir,
     )
 
@@ -482,6 +494,13 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             failed_count += 1
             continue
 
+        # create_only: stop here — .v3 files are on disk, originals untouched.
+        if create_only:
+            names = ', '.join(os.path.basename(p) for p in sorted(v3_to_orig))
+            print(f'{genome_id}: .v3 files created ({names}). Re-run without --create_only to promote.')
+            succeeded += 1
+            continue
+
         # 3. Archive originals → tar.gz, move .v3 → originals.
         #    For create_from_file=True, also back up derived files as extras (no .v3 intermediate, will be regenerated).
         extra_backup = [gbk_stem + ext for ext in ('.fna', '.gff', '.faa', '.ffn')] if create_from_file else None
@@ -535,6 +554,12 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             if os.path.exists(idx_path):
                 os.remove(idx_path)
                 print(f'{genome_id}: deleted stale assembly FASTA index')
+
+    if create_only:
+        print(f'\nSummary: {succeeded} .v3 files created, {failed_count} failed')
+        if failed_count == 0:
+            print('Re-run without --create_only to archive originals and promote .v3 files.')
+        return
 
     print(f'\nSummary: {succeeded} migrated, {failed_count} failed pre-check, {len(post_check_failed)} failed post-check')
     if failed_count > 0 or post_check_failed:

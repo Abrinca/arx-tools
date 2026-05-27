@@ -315,7 +315,7 @@ def _promote_v3_files(v3_to_orig: dict, genome_dir: str, genome_id: str,
 
 
 def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_format: str = '_scf{n}',
-                create_from_file: bool = False, create_only: bool = False):
+                create_from_file: bool = False, create_only: bool = False, promote: bool = False):
     """
     Upgrade folder structure from v2 to v3.
 
@@ -330,8 +330,10 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
       4. Post-check to verify success.
       5. Delete BLAST databases (they reference stale contig/locus IDs).
 
-    Pass --create_only to stop after step 2 (generate .v3 files) without promoting them.
-    Inspect the generated files, then re-run without --create_only to finish the upgrade.
+    Two-step workflow:
+      --create_only  Stop after step 2 — generate .v3 files without promoting them.
+                     Inspect the generated files, then re-run with --promote to finish.
+      --promote      Skip step 2 — promote .v3 files left by a previous --create_only run.
     """
     folder_structure_dir = _get_folder_structure_dir(folder_structure_dir)
 
@@ -349,7 +351,14 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             'shallow-check each genome; skip if already v3',
             'generate .v3 intermediate files for source files (gbk, assembly fna, annotations)',
             derived_action.split(';')[0].strip() if not create_from_file else derived_action,
-            '(promotion skipped — re-run without --create_only to archive originals and promote)',
+            '(promotion skipped — re-run with --promote to archive originals and promote)',
+        ]
+    elif promote:
+        actions = [
+            'shallow-check each genome; skip if already v3 or no pending .v3 files',
+            'archive originals into {genome_id}_v2_backup.tar.gz and promote pending .v3 files into place',
+            'post-check each genome to verify',
+            'delete BLAST databases (will be rebuilt on next import)',
         ]
     else:
         actions = [
@@ -360,15 +369,14 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             'post-check each genome to verify',
             'delete BLAST databases (will be rebuilt on next import)',
         ]
-    ask(
-        v_from=2, v_to=3,
-        actions=actions,
-        folder_structure_dir=folder_structure_dir,
-    )
+    ask(v_from=2, v_to=3, actions=actions, folder_structure_dir=folder_structure_dir)
+    genomes_iter = loop_genomes(folder_structure_dir=folder_structure_dir, skip_ignored=skip_ignored)
 
     succeeded = 0
     failed_count = 0
     post_check_failed = []
+    skipped_not_ready = 0   # --promote: genomes still v2 with no pending .v3 files
+    skipped_pending = 0     # normal run: genomes with leftover .v3 files (warn and skip)
 
     for genome in loop_genomes(folder_structure_dir=folder_structure_dir, skip_ignored=skip_ignored):
         genome_json = genome.json
@@ -379,10 +387,46 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         if pre_check.is_v3:
             print(f'{genome_id}: already v3, skipping')
             continue
+
+        if promote:
+            # --promote: skip creation, only handle .v3 files left by a previous --create_only run.
+            if not pre_check.has_pending_v3_files:
+                print(f'{genome_id}: no pending .v3 files, skipping (run with --create_only first)')
+                skipped_not_ready += 1
+                continue
+            names = ', '.join(os.path.basename(p) for p in pre_check.pending_files)
+            print(f'{genome_id}: promoting {names}')
+            v3_to_orig = {p: p[:-len('.v3')] for p in pre_check.pending_files}
+            archive = _promote_v3_files(v3_to_orig, genome_dir=genome.path, genome_id=genome_id)
+            print(f'{genome_id}: archived originals → {os.path.basename(archive)}')
+            post_check = check_genome_v3(genome.path, genome_id, deep=False, contig_format=contig_format)
+            if post_check.is_v3:
+                print(f'{genome_id}: done (post-check OK)')
+                succeeded += 1
+            else:
+                reasons = '; '.join(post_check.issues)
+                print(f'{genome_id}: WARNING: post-check failed: {reasons}')
+                post_check_failed.append(genome_id)
+            deleted = 0
+            for fname in os.listdir(genome.path):
+                if any(fname.endswith(ext) for ext in _BLAST_EXTENSIONS):
+                    os.remove(os.path.join(genome.path, fname))
+                    deleted += 1
+            if deleted:
+                print(f'{genome_id}: deleted {deleted} BLAST DB file(s)')
+            asm_filename = genome_json.get('assembly_fasta_file')
+            if asm_filename:
+                idx_path = os.path.join(genome.path, asm_filename + '.idx')
+                if os.path.exists(idx_path):
+                    os.remove(idx_path)
+                    print(f'{genome_id}: deleted stale assembly FASTA index')
+            continue
+
         if pre_check.has_pending_v3_files:
             names = ', '.join(os.path.basename(p) for p in pre_check.pending_files)
             print(f'{genome_id}: WARNING: partial upgrade detected ({names}). '
-                  f'Remove .v3 files manually and re-run to retry.')
+                  f'Use --promote to finish, or remove .v3 files manually and re-run to restart.')
+            skipped_pending += 1
             continue
 
         gbk_filename = genome_json.get('cds_tool_gbk_file')
@@ -497,7 +541,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         # create_only: stop here — .v3 files are on disk, originals untouched.
         if create_only:
             names = ', '.join(os.path.basename(p) for p in sorted(v3_to_orig))
-            print(f'{genome_id}: .v3 files created ({names}). Re-run without --create_only to promote.')
+            print(f'{genome_id}: .v3 files created ({names}). Re-run with --promote to promote.')
             succeeded += 1
             continue
 
@@ -555,18 +599,31 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                 os.remove(idx_path)
                 print(f'{genome_id}: deleted stale assembly FASTA index')
 
+    # ── Summary ──────────────────────────────────────────────────────────────
     if create_only:
         print(f'\nSummary: {succeeded} .v3 files created, {failed_count} failed')
         if failed_count == 0:
-            print('Re-run without --create_only to archive originals and promote .v3 files.')
+            print('Re-run with --promote to archive originals and promote .v3 files.')
         return
 
-    print(f'\nSummary: {succeeded} migrated, {failed_count} failed pre-check, {len(post_check_failed)} failed post-check')
+    if promote:
+        print(f'\nSummary: {succeeded} promoted, {skipped_not_ready} not ready, '
+              f'{failed_count} failed, {len(post_check_failed)} failed post-check')
+    else:
+        print(f'\nSummary: {succeeded} migrated, {skipped_pending} skipped (pending .v3), '
+              f'{failed_count} failed, {len(post_check_failed)} failed post-check')
+
     if failed_count > 0 or post_check_failed:
         if post_check_failed:
             print(f'Not bumping to version 3: post-check failures: {", ".join(post_check_failed)}. Fix and re-run.')
         else:
             print('Not bumping to version 3: fix errors and re-run.')
+    elif skipped_not_ready > 0:
+        print(f'Not bumping to version 3: {skipped_not_ready} genome(s) still need --create_only. '
+              f'Run --create_only on remaining genomes, then re-run --promote.')
+    elif skipped_pending > 0:
+        print(f'Not bumping to version 3: {skipped_pending} genome(s) have pending .v3 files. '
+              f'Run --promote to finish them.')
     else:
         set_folder_structure_version(new_version=3, folder_structure_dir=folder_structure_dir)
 

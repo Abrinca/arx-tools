@@ -938,6 +938,187 @@ class TestVersionBumpBehavior(TestCase):
             self.assertEqual(version_data['folder_structure_version'], 3)
 
 
+class TestCreateOnlyAndPromote(TestCase):
+    """Tests for the --create_only / --promote two-step upgrade workflow."""
+
+    def _setup_fs(self, tmp: str) -> str:
+        """Minimal v2 folder structure with one genome; returns the genome dir."""
+        genome_dir = os.path.join(tmp, 'organisms', GENOME_ID, 'genomes', GENOME_ID)
+        os.makedirs(genome_dir)
+        gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
+        fna_path = os.path.join(genome_dir, f'{GENOME_ID}.fna')
+        ann_path = os.path.join(genome_dir, f'{GENOME_ID}.KG')
+        _write_gbk(gbk_path, [('old_contig_1', ['OLD_00001', 'OLD_00002'])])
+        _write_fna(fna_path, ['old_contig_1'])
+        _write_annotation(ann_path, [('OLD_00001', 'K00001'), ('OLD_00002', 'K00002')])
+        genome_json = {
+            'identifier': GENOME_ID,
+            'cds_tool_gbk_file': f'{GENOME_ID}.gbk',
+            'assembly_fasta_file': f'{GENOME_ID}.fna',
+            'custom_annotations': [{'file': f'{GENOME_ID}.KG', 'type': 'KG'}],
+        }
+        with open(os.path.join(genome_dir, 'genome.json'), 'w') as f:
+            json.dump(genome_json, f)
+        with open(os.path.join(tmp, 'version.json'), 'w') as f:
+            json.dump({'folder_structure_version': 2}, f)
+        return genome_dir
+
+    def _run(self, tmp: str, **kwargs) -> None:
+        """Run from_2_to_3 with ask() and set_folder_structure_version() patched out."""
+        from unittest.mock import patch
+        from arx_tools import update_folder_structure as ufs
+        with (patch.object(ufs, 'ask'),
+              patch.object(ufs, 'set_folder_structure_version')):
+            ufs.from_2_to_3(folder_structure_dir=tmp, **kwargs)
+
+    # ── --create_only ─────────────────────────────────────────────────────────
+
+    def test_create_only_creates_v3_files(self):
+        """--create_only writes .v3 files for GBK, assembly FNA, and annotations."""
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._setup_fs(tmp)
+            self._run(tmp, create_only=True)
+            self.assertTrue(os.path.exists(os.path.join(genome_dir, f'{GENOME_ID}.gbk.v3')))
+            self.assertTrue(os.path.exists(os.path.join(genome_dir, f'{GENOME_ID}.fna.v3')))
+            self.assertTrue(os.path.exists(os.path.join(genome_dir, f'{GENOME_ID}.KG.v3')))
+
+    def test_create_only_leaves_originals_untouched(self):
+        """--create_only must not modify the original GBK or FNA."""
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._setup_fs(tmp)
+            gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
+            fna_path = os.path.join(genome_dir, f'{GENOME_ID}.fna')
+            original_gbk = open(gbk_path).read()
+            original_fna = open(fna_path).read()
+            self._run(tmp, create_only=True)
+            self.assertEqual(open(gbk_path).read(), original_gbk)
+            self.assertEqual(open(fna_path).read(), original_fna)
+
+    def test_create_only_does_not_create_archive(self):
+        """--create_only must not create a backup archive."""
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._setup_fs(tmp)
+            self._run(tmp, create_only=True)
+            self.assertFalse(os.path.exists(
+                os.path.join(genome_dir, f'{GENOME_ID}_v2_backup.tar.gz')))
+
+    def test_create_only_does_not_bump_version(self):
+        """--create_only must never call set_folder_structure_version."""
+        from unittest.mock import patch, MagicMock
+        from arx_tools import update_folder_structure as ufs
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_fs(tmp)
+            mock_set_version = MagicMock()
+            with (patch.object(ufs, 'ask'),
+                  patch.object(ufs, 'set_folder_structure_version', mock_set_version)):
+                ufs.from_2_to_3(folder_structure_dir=tmp, create_only=True)
+            mock_set_version.assert_not_called()
+
+    def test_create_only_skips_genome_with_existing_pending_files(self):
+        """If .v3 files already exist, --create_only warns and skips (no overwrite)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._setup_fs(tmp)
+            gbk_v3 = os.path.join(genome_dir, f'{GENOME_ID}.gbk.v3')
+            with open(gbk_v3, 'w') as f:
+                f.write('leftover')
+            self._run(tmp, create_only=True)
+            # leftover file must not be overwritten
+            with open(gbk_v3) as f:
+                self.assertEqual(f.read(), 'leftover')
+            # no archive should have been created
+            self.assertFalse(os.path.exists(
+                os.path.join(genome_dir, f'{GENOME_ID}_v2_backup.tar.gz')))
+
+    # ── --promote ─────────────────────────────────────────────────────────────
+
+    def test_promote_promotes_pending_files(self):
+        """--promote archives originals and moves .v3 files into place."""
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._setup_fs(tmp)
+            gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
+            with open(gbk_path + '.v3', 'w') as f:
+                f.write('v3 content')
+            self._run(tmp, promote=True)
+            self.assertFalse(os.path.exists(gbk_path + '.v3'))
+            with open(gbk_path) as f:
+                self.assertEqual(f.read(), 'v3 content')
+            self.assertTrue(os.path.exists(
+                os.path.join(genome_dir, f'{GENOME_ID}_v2_backup.tar.gz')))
+
+    def test_promote_skips_genome_without_pending_files(self):
+        """--promote silently skips a genome that has no .v3 files."""
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._setup_fs(tmp)
+            self._run(tmp, promote=True)
+            self.assertFalse(os.path.exists(
+                os.path.join(genome_dir, f'{GENOME_ID}_v2_backup.tar.gz')))
+
+    def test_promote_does_not_bump_version_when_genomes_not_ready(self):
+        """Version is not bumped when --promote finds genomes with no pending .v3 files."""
+        from unittest.mock import patch, MagicMock
+        from arx_tools import update_folder_structure as ufs
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_fs(tmp)
+            mock_set_version = MagicMock()
+            with (patch.object(ufs, 'ask'),
+                  patch.object(ufs, 'set_folder_structure_version', mock_set_version)):
+                ufs.from_2_to_3(folder_structure_dir=tmp, promote=True)
+            mock_set_version.assert_not_called()
+
+    def test_promote_bumps_version_when_all_promoted(self):
+        """Version is bumped to 3 after --promote succeeds for every genome."""
+        from unittest.mock import patch
+        from arx_tools import update_folder_structure as ufs
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_fs(tmp)
+            with patch.object(ufs, 'ask'):
+                ufs.from_2_to_3(folder_structure_dir=tmp, create_only=True)
+            with patch.object(ufs, 'ask'):
+                ufs.from_2_to_3(folder_structure_dir=tmp, promote=True)
+            with open(os.path.join(tmp, 'version.json')) as f:
+                self.assertEqual(json.load(f)['folder_structure_version'], 3)
+
+    # ── Two-step workflow ─────────────────────────────────────────────────────
+
+    def test_create_only_then_promote_produces_v3_genome(self):
+        """Full two-step workflow: --create_only followed by --promote yields a v3 genome."""
+        from unittest.mock import patch
+        from arx_tools import update_folder_structure as ufs
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._setup_fs(tmp)
+
+            # Step 1: generate .v3 files; genome must still be v2 on disk
+            with patch.object(ufs, 'ask'):
+                ufs.from_2_to_3(folder_structure_dir=tmp, create_only=True)
+            pre = check_genome_v3(genome_dir, GENOME_ID)
+            self.assertFalse(pre.is_v3, 'originals should still be v2 after --create_only')
+            self.assertTrue(pre.has_pending_v3_files)
+
+            # Step 2: promote; genome must now be v3
+            with patch.object(ufs, 'ask'):
+                ufs.from_2_to_3(folder_structure_dir=tmp, promote=True)
+            post = check_genome_v3(genome_dir, GENOME_ID)
+            self.assertTrue(post.is_v3, f'post-promote check failed: {post.issues}')
+            self.assertFalse(post.has_pending_v3_files)
+
+    # ── skipped_pending blocks version bump in normal run ─────────────────────
+
+    def test_normal_run_does_not_bump_version_when_pending_files_exist(self):
+        """A normal run that skips a genome due to leftover .v3 files must not bump the version."""
+        from unittest.mock import patch, MagicMock
+        from arx_tools import update_folder_structure as ufs
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_dir = self._setup_fs(tmp)
+            gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
+            with open(gbk_path + '.v3', 'w') as f:
+                f.write('leftover')
+            mock_set_version = MagicMock()
+            with (patch.object(ufs, 'ask'),
+                  patch.object(ufs, 'set_folder_structure_version', mock_set_version)):
+                ufs.from_2_to_3(folder_structure_dir=tmp)
+            mock_set_version.assert_not_called()
+
+
 class TestExtendGeneTagMap(TestCase):
     def test_adds_five_digit_variant(self):
         """5-digit variant of each v3 tag is added as a key mapping to the same v3 tag."""

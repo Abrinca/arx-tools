@@ -174,8 +174,11 @@ class GenBankFile(GenomeFile):
 
         try:
             organism_data['taxid'] = self.taxid(raise_error=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning(
+                f'Could not determine taxid from {os.path.basename(self.path)}: {e}. '
+                f'Provide it manually via organism.json or the taxid form field.'
+            )
 
         rec, feature = self._get_first_gbk_rec_feature(gbk=self.path)
         comment = rec.annotations.get('comment', '')
@@ -227,6 +230,13 @@ class GenBankFile(GenomeFile):
         # prokka files contain organism name, which can be turned into taxid using Entrez
         organism = feature.qualifiers.get('organism')
         if type(organism) is list and len(organism) == 1:
+            if organism[0] == 'Genus species':
+                raise AssertionError(
+                    f'GBK organism is the Prokka placeholder "Genus species" — Prokka was run without '
+                    f'--genus/--species so the taxid cannot be auto-detected. '
+                    f'Upload an organism.json alongside the GBK with {{"taxid": <int>}}. '
+                    f'Find your taxid at https://www.ncbi.nlm.nih.gov/taxonomy'
+                )
             return entrez_organism_to_taxid(organism[0])
 
         # ask for input or raise error

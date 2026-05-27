@@ -476,10 +476,14 @@ def import_genome(
             if _pre_fna is not None:
                 fna_contig_ids = _pre_fna.get_contig_ids()
                 gbk_contig_ids = gbk.get_contig_ids()
-                assert set(fna_contig_ids) == set(gbk_contig_ids), (
+                # Prokka writes FNA headers as "gnl|X|bare_id" (e.g. "gnl|C|ALNJDMAK_1")
+                # while the GBK LOCUS line is just the bare id ("ALNJDMAK_1").
+                # Strip the gnl|X| prefix before comparing so Prokka genomes pass.
+                fna_contig_ids_norm = [cid.rsplit('|', 1)[1] if '|' in cid else cid for cid in fna_contig_ids]
+                assert set(fna_contig_ids_norm) == set(gbk_contig_ids), (
                     f'FNA and GBK contain different contig IDs.\n'
-                    f'  FNA only: {set(fna_contig_ids) - set(gbk_contig_ids)}\n'
-                    f'  GBK only: {set(gbk_contig_ids) - set(fna_contig_ids)}'
+                    f'  FNA only: {set(fna_contig_ids_norm) - set(gbk_contig_ids)}\n'
+                    f'  GBK only: {set(gbk_contig_ids) - set(fna_contig_ids_norm)}'
                 )
                 # canonical IDs numbered by GBK order (consistent with the no-fna path)
                 contig_id_map = {
@@ -487,7 +491,7 @@ def import_genome(
                     for i, gbk_id in enumerate(gbk_contig_ids)
                 }
                 tmp_fna = _pre_fna.path + '.renaming'
-                _pre_fna.rename_contig_ids(out=tmp_fna, new_ids=[contig_id_map[i] for i in fna_contig_ids], update_path=False)
+                _pre_fna.rename_contig_ids(out=tmp_fna, new_ids=[contig_id_map[i] for i in fna_contig_ids_norm], update_path=False)
                 os.replace(tmp_fna, _pre_fna.path)
                 canonical_ids = [contig_id_map[i] for i in gbk_contig_ids]
             else:

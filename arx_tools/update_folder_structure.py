@@ -176,14 +176,20 @@ def _extend_gene_tag_map(gene_tag_map: dict) -> dict:
     return extended
 
 
-def _apply_gene_tag_map_to_fasta(src: str, dst: str, gene_tag_map: dict) -> int:
-    """Write a locus-tag-renamed copy of a FASTA file to dst. Returns rename count."""
+def _apply_gene_tag_map_to_fasta(src: str, dst: str, gene_tag_map: dict) -> tuple[int, int]:
+    """
+    Write a locus-tag-renamed copy of a FASTA file to dst.
+
+    Returns (renamed, total): count of headers renamed and total header count.
+    Callers can compare the two to warn when no renames occurred despite a non-trivial map.
+    """
     with open(src) as f:
         lines = f.readlines()
-    renamed = 0
+    renamed = total = 0
     result = []
     for line in lines:
         if line.startswith('>'):
+            total += 1
             parts = line[1:].split(None, 1)
             old_gene_tag = parts[0]
             if old_gene_tag in gene_tag_map:
@@ -193,7 +199,7 @@ def _apply_gene_tag_map_to_fasta(src: str, dst: str, gene_tag_map: dict) -> int:
         result.append(line)
     with open(dst, 'w') as f:
         f.writelines(result)
-    return renamed
+    return renamed, total
 
 
 def _apply_contig_map_to_fna(src: str, dst: str, contig_map: dict) -> int:
@@ -207,9 +213,10 @@ def _apply_contig_map_to_fna(src: str, dst: str, contig_map: dict) -> int:
         if line.startswith('>'):
             parts = line[1:].split(None, 1)
             old_id = parts[0]
-            if old_id in contig_map:
+            new_id = _resolve_contig_id(old_id, contig_map)
+            if new_id is not None:
                 rest = (' ' + parts[1]) if len(parts) > 1 else '\n'
-                line = f'>{contig_map[old_id]}{rest}'
+                line = f'>{new_id}{rest}'
                 renamed += 1
         result.append(line)
 
@@ -218,63 +225,156 @@ def _apply_contig_map_to_fna(src: str, dst: str, contig_map: dict) -> int:
     return renamed
 
 
-def _apply_maps_to_gff(src: str, dst: str, contig_map: dict, gene_tag_map: dict) -> int:
+def _apply_maps_to_gff(src: str, dst: str, contig_map: dict, gene_tag_map: dict) -> tuple[int, int]:
     """
     Write a renamed copy of a GFF file to dst, preserving all custom content.
 
     Updates contig IDs in seqid column and ##sequence-region pragmas (via contig_map),
     and locus tag values in all attributes of column 9 (via gene_tag_map).
     Handles the embedded ##FASTA section present in Prokka GFFs.
-    Returns the number of changed lines.
+
+    Returns (seqid_changed, attr_renamed): number of feature lines where the seqid
+    column was renamed, and number of ID= or Parent= attribute values that were renamed.
+    Callers can use these counts to warn when no ID/Parent renames occurred despite a
+    non-trivial gene_tag_map (which indicates an unsupported GFF feature-ID format).
+    Note: locus_tag= is also renamed but is not counted here — it always succeeds via
+    direct lookup and does not indicate format recognition.
     """
     with open(src) as f:
         lines = f.readlines()
 
-    changed = 0
+    seqid_changed = 0
+    attr_renamed = 0
     in_fasta = False
     result = []
     for line in lines:
-        original = line
         if in_fasta:
             # Rename embedded FASTA contig headers
             if line.startswith('>'):
                 parts = line[1:].split(None, 1)
                 old_id = parts[0]
-                if old_id in contig_map:
+                new_id = _resolve_contig_id(old_id, contig_map)
+                if new_id is not None:
                     rest = (' ' + parts[1]) if len(parts) > 1 else '\n'
-                    line = f'>{contig_map[old_id]}{rest}'
+                    line = f'>{new_id}{rest}'
         elif line.strip() == '##FASTA':
             in_fasta = True
         elif line.startswith('##sequence-region'):
             # Format: ##sequence-region <seqid> <start> <end>
             parts = line.split(None, 3)
-            if len(parts) == 4 and parts[1] in contig_map:
-                parts[1] = contig_map[parts[1]]
-                line = ' '.join(parts)
-                if not line.endswith('\n'):
-                    line += '\n'
+            if len(parts) == 4:
+                new_contig = _resolve_contig_id(parts[1], contig_map)
+                if new_contig is not None:
+                    parts[1] = new_contig
+                    line = ' '.join(parts)
+                    if not line.endswith('\n'):
+                        line += '\n'
         elif not line.startswith('#') and line.strip():
             cols = line.split('\t')
             if len(cols) == 9:
-                if cols[0] in contig_map:
-                    cols[0] = contig_map[cols[0]]
+                new_contig = _resolve_contig_id(cols[0], contig_map)
+                if new_contig is not None:
+                    cols[0] = new_contig
+                    seqid_changed += 1
                 trailing = '\n' if cols[8].endswith('\n') else ''
                 new_attrs = []
                 for attr in cols[8].rstrip('\n').split(';'):
                     if '=' in attr:
                         key, val = attr.split('=', 1)
-                        new_attrs.append(f'{key}={gene_tag_map.get(val, val)}')
+                        new_val = _lookup_gene_tag(val, gene_tag_map)
+                        new_attrs.append(f'{key}={new_val}')
+                        # Only count ID= and Parent= renames: these require format-specific
+                        # knowledge (Prokka suffixes, PGAP prefixes).  locus_tag= is always
+                        # renamed by direct lookup and doesn't indicate format recognition.
+                        if key in ('ID', 'Parent') and new_val != val:
+                            attr_renamed += 1
                     else:
                         new_attrs.append(attr)
                 cols[8] = ';'.join(new_attrs) + trailing
                 line = '\t'.join(cols)
-        if line != original:
-            changed += 1
         result.append(line)
 
     with open(dst, 'w') as f:
         f.writelines(result)
-    return changed
+    return seqid_changed, attr_renamed
+
+
+def _resolve_contig_id(contig_id: str, contig_map: dict) -> str | None:
+    """
+    Look up contig_id in contig_map, with a fallback for the gnl|X|id prefix format
+    written by tools such as Prokka.
+
+    When a GFF or FNA is generated by Prokka the seqid / FASTA header is written as
+    "gnl|C|ALNJDMAK_1" while the GBK LOCUS line (and therefore BioPython's rec.id)
+    is just "ALNJDMAK_1".  The contig_map is built from the GBK, so the key is the
+    bare form.  This helper strips the gnl|X| wrapper before the lookup so that the
+    full gnl|C|… identifier is resolved to the new v3 contig ID.
+
+    Returns the new contig ID, or None if no mapping exists.
+    """
+    new_id = contig_map.get(contig_id)
+    if new_id is not None:
+        return new_id
+    if '|' in contig_id:
+        base = contig_id.rsplit('|', 1)[1]
+        if base in contig_map:
+            return contig_map[base]
+    return None
+
+
+# Prokka appends a feature-type suffix to the locus tag to form the GFF3 ID attribute
+# (e.g. "ID=GENOME_00001_gene", "ID=GENOME_00001_tRNA").  This tuple lists the known
+# suffixes so that _lookup_gene_tag can strip them and try the base locus tag.
+_PROKKA_FEATURE_SUFFIXES = (
+    '_gene', '_tRNA', '_rRNA', '_tmRNA', '_repeat_region',
+    '_misc_RNA', '_CRISPR', '_ncRNA',
+)
+
+# PGAP (NCBI annotator) prefixes a feature-type keyword to the locus tag
+# (e.g. "ID=gene-RS00001", "ID=rna-RS00150", "ID=exon-RS00150-1").
+# Note: "cds-" may use a protein accession instead of a locus tag (e.g.
+# "ID=cds-WP_012211193.1"); those are not in gene_tag_map and are left unchanged.
+_PGAP_FEATURE_PREFIXES = ('gene-', 'cds-', 'rna-', 'exon-', 'id-')
+
+
+def _lookup_gene_tag(val: str, gene_tag_map: dict) -> str:
+    """
+    Look up val in gene_tag_map, with fallbacks for Prokka and PGAP feature-ID conventions.
+
+    Direct lookup first; then:
+
+    Prokka GFF3: "ID=locus_tag_gene" / "Parent=locus_tag_gene" — strip the trailing
+    feature-type suffix (e.g. '_gene', '_tRNA') and try the base locus tag.
+
+    PGAP GFF3: "ID=gene-locus_tag", "ID=cds-locus_tag", "ID=rna-locus_tag" — strip
+    the leading feature-type prefix and try the base locus tag.  Also handles the
+    "exon-locus_tag-N" pattern (exon-number suffix) used for PGAP exon features.
+    When the base after the prefix is not a known locus tag (e.g. a protein accession
+    in "ID=cds-WP_012211193.1"), the value is left unchanged.
+
+    Returns the new value, or val unchanged if no mapping exists.
+    """
+    new_val = gene_tag_map.get(val)
+    if new_val is not None:
+        return new_val
+    # Prokka: locus_tag_feature_type (trailing underscore-prefixed suffix)
+    for suffix in _PROKKA_FEATURE_SUFFIXES:
+        if val.endswith(suffix):
+            base = val[:-len(suffix)]
+            if base in gene_tag_map:
+                return gene_tag_map[base] + suffix
+    # PGAP: feature_type-locus_tag (leading hyphen-terminated prefix)
+    for prefix in _PGAP_FEATURE_PREFIXES:
+        if val.startswith(prefix):
+            rest = val[len(prefix):]
+            if rest in gene_tag_map:
+                return prefix + gene_tag_map[rest]
+            # exon-locus_tag-N: locus tag followed by a hyphen + integer exon number
+            if '-' in rest:
+                base, sep, exon_n = rest.rpartition('-')
+                if exon_n.isdigit() and base in gene_tag_map:
+                    return f'{prefix}{gene_tag_map[base]}{sep}{exon_n}'
+    return val
 
 
 _BLAST_EXTENSIONS = {
@@ -461,6 +561,10 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         #     GBK stores external/NCBI locus tags.
         if not failed:
             extended_gene_tag_map = _extend_gene_tag_map(gene_tag_map)
+            # True when at least one locus tag actually changes (not an identity map).
+            # Used below to suppress false-positive "no renames" warnings for genomes
+            # whose locus tags are already v3-compliant.
+            _nontrivial_lt_map = any(k != v for k, v in gene_tag_map.items())
 
         # 2c. Update assembly FNA contig headers
         if not failed and contig_map:
@@ -474,6 +578,10 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                         renamed = _apply_contig_map_to_fna(asm_path, asm_v3, contig_map)
                         v3_to_orig[asm_v3] = asm_path
                         print(f'{genome_id}: created {os.path.basename(asm_v3)} ({renamed} contig headers updated)')
+                        if renamed == 0:
+                            print(f'{genome_id}: WARNING: assembly FNA: no contig headers matched '
+                                  f'— the seqid format may not be supported (plain or gnl|X|id). '
+                                  f'Check {os.path.basename(asm_path)} manually.')
                     except Exception as e:
                         print(f'{genome_id}: ERROR updating assembly FNA: {e}')
                         failed = True
@@ -509,23 +617,44 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
 
         # 2e. Create .v3 for existing derived files (skipped when create_from_file, as they'll be regenerated).
         if not failed and not create_from_file:
-            for ext, apply_fn in [
-                ('.fna', lambda src, dst: _apply_contig_map_to_fna(src, dst, contig_map)),
-                ('.gff', lambda src, dst: _apply_maps_to_gff(src, dst, contig_map, extended_gene_tag_map)),
-                ('.faa', lambda src, dst: _apply_gene_tag_map_to_fasta(src, dst, extended_gene_tag_map)),
-                ('.ffn', lambda src, dst: _apply_gene_tag_map_to_fasta(src, dst, extended_gene_tag_map)),
-            ]:
+            for ext in ('.fna', '.gff', '.faa', '.ffn'):
                 orig_path = gbk_stem + ext
-                if os.path.exists(orig_path):
-                    v3_path = orig_path + '.v3'
-                    v3_created.add(v3_path)
-                    try:
-                        apply_fn(orig_path, v3_path)
-                        v3_to_orig[v3_path] = orig_path
-                        print(f'{genome_id}: created {os.path.basename(v3_path)}')
-                    except Exception as e:
-                        print(f'{genome_id}: ERROR creating {os.path.basename(v3_path)}: {e}')
-                        failed = True
+                if not os.path.exists(orig_path):
+                    continue
+                v3_path = orig_path + '.v3'
+                v3_created.add(v3_path)
+                try:
+                    if ext == '.fna':
+                        renamed = _apply_contig_map_to_fna(orig_path, v3_path, contig_map)
+                        print(f'{genome_id}: created {os.path.basename(v3_path)} ({renamed} contig headers updated)')
+                        if contig_map and renamed == 0:
+                            print(f'{genome_id}: WARNING: {os.path.basename(orig_path)}: no contig headers '
+                                  f'matched — seqid format may not be supported. Check manually.')
+                    elif ext == '.gff':
+                        seqid_changed, attr_renamed = _apply_maps_to_gff(
+                            orig_path, v3_path, contig_map, extended_gene_tag_map)
+                        print(f'{genome_id}: created {os.path.basename(v3_path)} '
+                              f'({seqid_changed} seqids, {attr_renamed} attributes updated)')
+                        if contig_map and seqid_changed == 0:
+                            print(f'{genome_id}: WARNING: {os.path.basename(orig_path)}: no seqids '
+                                  f'matched — contig ID format in GFF may not be supported. Check manually.')
+                        if _nontrivial_lt_map and attr_renamed == 0:
+                            print(f'{genome_id}: WARNING: {os.path.basename(orig_path)}: no attribute '
+                                  f'values renamed — ID=/Parent= format may not be supported '
+                                  f'(known: Prokka _gene/_tRNA suffixes, PGAP gene-/cds-/rna-/exon- prefixes). '
+                                  f'Check manually.')
+                    else:  # .faa / .ffn
+                        renamed, total = _apply_gene_tag_map_to_fasta(
+                            orig_path, v3_path, extended_gene_tag_map)
+                        print(f'{genome_id}: created {os.path.basename(v3_path)} ({renamed}/{total} headers updated)')
+                        if _nontrivial_lt_map and total > 0 and renamed == 0:
+                            print(f'{genome_id}: WARNING: {os.path.basename(orig_path)}: no FASTA '
+                                  f'headers matched — locus tag format may differ from what is expected. '
+                                  f'Check manually.')
+                    v3_to_orig[v3_path] = orig_path
+                except Exception as e:
+                    print(f'{genome_id}: ERROR creating {os.path.basename(v3_path)}: {e}')
+                    failed = True
 
         # On failure: clean up every .v3 file we may have created, leave originals untouched
         if failed:

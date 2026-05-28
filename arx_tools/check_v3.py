@@ -90,6 +90,14 @@ def check_genome_v3(
         if os.path.exists(asm_path):
             _check_fna_headers(asm_path, contig_pattern, result)
 
+    # Check faa / ffn headers
+    for key in ('cds_tool_faa_file', 'cds_tool_ffn_file'):
+        filename = genome_json.get(key)
+        if filename:
+            path = os.path.join(genome_dir, filename)
+            if os.path.exists(path):
+                _check_faa_ffn(path, gene_pattern, result)
+
     # Deep: check custom annotation files
     if deep:
         for ca in custom_annotations:
@@ -99,6 +107,25 @@ def check_genome_v3(
                 _check_annotation(ca_path, gene_pattern, is_eggnog, result)
 
     return result
+
+
+def _check_faa_ffn(path: str, lt_pattern, result: V3CheckResult):
+    """Check that faa/ffn FASTA headers use v3 locus tags, stripping gnl|db| prefix if present."""
+    bad = []
+    with open(path) as f:
+        for line in f:
+            if line.startswith('>'):
+                raw_id = line[1:].split(None, 1)[0]
+                if raw_id.startswith('gnl|') and raw_id.count('|') >= 2:
+                    raw_id = raw_id[raw_id.index('|', 4) + 1:]
+                if not lt_pattern.match(raw_id):
+                    bad.append(line[1:].split(None, 1)[0])
+                    if len(bad) >= 3:
+                        break
+    if bad:
+        result.is_v3 = False
+        fname = os.path.basename(path)
+        result.issues.append(f'{fname}: locus_tags not v3 (e.g. {", ".join(bad)})')
 
 
 def _check_gbk(gbk_path: str, lt_pattern, contig_pattern, result: V3CheckResult):

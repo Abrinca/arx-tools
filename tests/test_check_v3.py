@@ -36,6 +36,13 @@ def _write_fna(path: str, contigs: list[str]) -> None:
             f.write(f'>{contig_id}\nATCGATCGATCG\n')
 
 
+def _write_faa(path: str, headers: list[str]) -> None:
+    """Write a minimal FASTA protein file."""
+    with open(path, 'w') as f:
+        for h in headers:
+            f.write(f'>{h}\nMPKL\n')
+
+
 def _write_annotation(path: str, rows: list[tuple[str, str]]) -> None:
     """Write a minimal tab-separated annotation file."""
     with open(path, 'w') as f:
@@ -290,6 +297,68 @@ class TestCheckV3PendingFiles(TestCase):
             result = check_genome_v3(tmp, GENOME_ID)
             self.assertFalse(result.has_pending_v3_files)
             self.assertEqual(result.pending_files, [])
+
+
+class TestCheckV3FaaFfn(TestCase):
+    def _setup(self, tmp_dir, faa_headers, ffn_headers=None):
+        faa_path = os.path.join(tmp_dir, f'{GENOME_ID}.faa')
+        _write_faa(faa_path, faa_headers)
+        genome_json = {
+            'identifier': GENOME_ID,
+            'cds_tool_gbk_file': f'{GENOME_ID}.gbk',
+            'cds_tool_faa_file': f'{GENOME_ID}.faa',
+        }
+        if ffn_headers is not None:
+            ffn_path = os.path.join(tmp_dir, f'{GENOME_ID}.ffn')
+            _write_faa(ffn_path, ffn_headers)
+            genome_json['cds_tool_ffn_file'] = f'{GENOME_ID}.ffn'
+        _write_gbk(os.path.join(tmp_dir, f'{GENOME_ID}.gbk'), _v3_gbk_contigs())
+        with open(os.path.join(tmp_dir, 'genome.json'), 'w') as f:
+            json.dump(genome_json, f)
+
+    def test_v3_faa_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup(tmp, [f'{GENOME_ID}_000001', f'{GENOME_ID}_000002'])
+            result = check_genome_v3(tmp, GENOME_ID)
+            self.assertTrue(result.is_v3)
+
+    def test_old_faa_tag_caught(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup(tmp, [f'{GENOME_ID}_00001', f'{GENOME_ID}_00002'])
+            result = check_genome_v3(tmp, GENOME_ID)
+            self.assertFalse(result.is_v3)
+            self.assertTrue(any('faa' in issue for issue in result.issues))
+
+    def test_gnl_extdb_v3_tag_passes(self):
+        """gnl|extdb|GENOME_ID_000001 format should pass the v3 check."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup(tmp, [f'gnl|extdb|{GENOME_ID}_000001 some product [Org]'])
+            result = check_genome_v3(tmp, GENOME_ID)
+            self.assertTrue(result.is_v3)
+
+    def test_gnl_extdb_old_tag_caught(self):
+        """gnl|extdb|GENOME_ID_00001 (5-digit) should fail the v3 check."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup(tmp, [f'gnl|extdb|{GENOME_ID}_00001 some product'])
+            result = check_genome_v3(tmp, GENOME_ID)
+            self.assertFalse(result.is_v3)
+
+    def test_ffn_old_tag_caught(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup(tmp,
+                        faa_headers=[f'{GENOME_ID}_000001'],
+                        ffn_headers=[f'{GENOME_ID}_00001'])
+            result = check_genome_v3(tmp, GENOME_ID)
+            self.assertFalse(result.is_v3)
+            self.assertTrue(any('ffn' in issue for issue in result.issues))
+
+    def test_missing_faa_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            genome_json = {'identifier': GENOME_ID, 'cds_tool_faa_file': 'nonexistent.faa'}
+            with open(os.path.join(tmp, 'genome.json'), 'w') as f:
+                json.dump(genome_json, f)
+            result = check_genome_v3(tmp, GENOME_ID)
+            self.assertTrue(result.is_v3)
 
 
 class TestCheckV3SubdirectoryLayout(TestCase):

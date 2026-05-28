@@ -391,6 +391,18 @@ class TestApplyMapsToGffProkka(TestCase):
         self.assertIn('Parent=NEW_000001_gene', content)
         self.assertNotIn('Parent=OLD_000001_gene', content)
 
+    def test_locus_tag_only_rename_counts_as_attr_renamed(self):
+        """When ID= uses a gene name (not a locus tag) but locus_tag= is renamed,
+        attr_renamed must be > 0 so no false-positive 'no attributes renamed' warning fires.
+        This covers RefSeq/NCBI GFFs like R64 where ID=gene-YAL068C style is used."""
+        line = 'scf1\tRefSeq\tgene\t1\t9\t.\t+\t.\tID=gene-YAL068C;locus_tag=R64_00001\n'
+        _, _, attr_renamed = self._roundtrip(
+            [line],
+            contig_map={},
+            gene_tag_map=_extend_gene_tag_map({'placeholder': 'R64_000001'}),
+        )
+        self.assertGreater(attr_renamed, 0)
+
     def test_prokka_gene_and_cds_pair_fully_renamed(self):
         """A realistic Prokka gene+CDS pair is fully renamed: seqid, ID, Parent, locus_tag."""
         gene_line = (
@@ -500,6 +512,35 @@ class TestApplyGeneTagMapToFasta(TestCase):
         self.assertEqual(renamed, 0)
         self.assertEqual(total, 1)
         self.assertIn('>OLD_000001', result)
+
+    def test_gnl_extdb_prefix_renamed(self):
+        """gnl|extdb|LOCUS_TAG format headers are renamed; prefix is preserved."""
+        result, renamed, total = self._roundtrip(
+            '>gnl|extdb|OLD_000001 some product [Organism]\nMPKL\n',
+            {'OLD_000001': 'NEW_000001'},
+        )
+        self.assertEqual(renamed, 1)
+        self.assertEqual(total, 1)
+        self.assertIn('>gnl|extdb|NEW_000001 some product [Organism]', result)
+        self.assertNotIn('OLD_000001', result)
+
+    def test_gnl_other_prefix_renamed(self):
+        """gnl|C|LOCUS_TAG format (Prokka protein_id style) is also handled."""
+        result, renamed, total = self._roundtrip(
+            '>gnl|C|OLD_000001 hypothetical\nMPKL\n',
+            {'OLD_000001': 'NEW_000001'},
+        )
+        self.assertEqual(renamed, 1)
+        self.assertIn('>gnl|C|NEW_000001 hypothetical', result)
+
+    def test_gnl_prefix_no_match_unchanged(self):
+        """gnl|extdb| header with no match in map is left untouched."""
+        result, renamed, total = self._roundtrip(
+            '>gnl|extdb|OLD_000001\nMPKL\n',
+            {'OTHER': 'NEW'},
+        )
+        self.assertEqual(renamed, 0)
+        self.assertIn('>gnl|extdb|OLD_000001', result)
 
     def test_sequence_lines_not_modified(self):
         """Sequence lines that look like a locus tag are never touched."""

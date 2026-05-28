@@ -191,10 +191,17 @@ def _apply_gene_tag_map_to_fasta(src: str, dst: str, gene_tag_map: dict) -> tupl
         if line.startswith('>'):
             total += 1
             parts = line[1:].split(None, 1)
-            old_gene_tag = parts[0]
-            if old_gene_tag in gene_tag_map:
-                rest = (' ' + parts[1]) if len(parts) > 1 else '\n'
-                line = f'>{gene_tag_map[old_gene_tag]}{rest}'
+            old_id = parts[0]
+            rest = (' ' + parts[1]) if len(parts) > 1 else '\n'
+            new_id = gene_tag_map.get(old_id)
+            if new_id is None and old_id.startswith('gnl|') and old_id.count('|') >= 2:
+                # Handle gnl|db|TAG format (e.g. gnl|extdb|LOCUS_TAG from NCBI .faa files)
+                sep = old_id.index('|', 4) + 1
+                tag = old_id[sep:]
+                if tag in gene_tag_map:
+                    new_id = old_id[:sep] + gene_tag_map[tag]
+            if new_id is not None:
+                line = f'>{new_id}{rest}'
                 renamed += 1
         result.append(line)
     with open(dst, 'w') as f:
@@ -264,8 +271,7 @@ def _rename_gff_feature_line(line: str, contig_map: dict, gene_tag_map: dict) ->
             key, val = attr.split('=', 1)
             new_val = _lookup_gene_tag(val, gene_tag_map)
             new_attrs.append(f'{key}={new_val}')
-            # Only ID=/Parent= renames require format-specific logic; locus_tag= always succeeds directly.
-            if key in ('ID', 'Parent') and new_val != val:
+            if key in ('ID', 'Parent', 'locus_tag') and new_val != val:
                 attr_renamed += 1
         else:
             new_attrs.append(attr)
@@ -516,7 +522,6 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             contig_map, gene_tag_map = GenBankFile(gbk_path).normalize(
                 out=gbk_v3, genome_id=genome_id, contig_format=contig_format)
             v3_to_orig[gbk_v3] = gbk_path
-            print(f'{genome_id}: created {os.path.basename(gbk_v3)} ({len(gene_tag_map)} locus tags renamed)')
 
             # 2b. Build extended map so annotation/derived files that use arx-assigned
             #     5-digit locus tags (e.g. GENOME_ID_00001) are also covered when the
@@ -526,6 +531,10 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             # Used below to suppress false-positive "no renames" warnings for genomes
             # whose locus tags are already v3-compliant.
             _nontrivial_lt_map = any(k != v for k, v in gene_tag_map.items())
+            if _nontrivial_lt_map:
+                print(f'{genome_id}: created {os.path.basename(gbk_v3)} ({len(gene_tag_map)} locus tags renamed)')
+            else:
+                print(f'{genome_id}: created {os.path.basename(gbk_v3)} ({len(gene_tag_map)} locus tags, no rename needed)')
 
             # 2c. Update assembly FNA contig headers
             if contig_map:
@@ -584,15 +593,18 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                     elif ext == '.gff':
                         seqid_changed, attr_renamed = _apply_maps_to_gff(
                             orig_path, v3_path, contig_map, extended_gene_tag_map)
-                        print(f'{genome_id}: created {os.path.basename(v3_path)} '
-                              f'({seqid_changed} seqids, {attr_renamed} attributes updated)')
+                        if _nontrivial_lt_map or attr_renamed > 0:
+                            print(f'{genome_id}: created {os.path.basename(v3_path)} '
+                                  f'({seqid_changed} seqids, {attr_renamed} attributes updated)')
+                        else:
+                            print(f'{genome_id}: created {os.path.basename(v3_path)} '
+                                  f'({seqid_changed} seqids, no attribute rename needed)')
                         if contig_map and seqid_changed == 0:
                             print(f'{genome_id}: WARNING: {os.path.basename(orig_path)}: no seqids '
                                   f'matched — contig ID format in GFF may not be supported. Check manually.')
                         if _nontrivial_lt_map and attr_renamed == 0:
                             print(f'{genome_id}: WARNING: {os.path.basename(orig_path)}: no attribute '
-                                  f'values renamed — ID=/Parent= format may not be supported '
-                                  f'(known: Prokka _gene/_tRNA suffixes, PGAP gene-/cds-/rna-/exon- prefixes). '
+                                  f'values renamed — GFF attribute format may not be supported. '
                                   f'Check manually.')
                         with open(v3_path) as _gff:
                             if any('protein_id=gnl|' in ln for ln in _gff if not ln.startswith('#')):
@@ -602,7 +614,10 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                     else:  # .faa / .ffn
                         renamed, total = _apply_gene_tag_map_to_fasta(
                             orig_path, v3_path, extended_gene_tag_map)
-                        print(f'{genome_id}: created {os.path.basename(v3_path)} ({renamed}/{total} headers updated)')
+                        if _nontrivial_lt_map:
+                            print(f'{genome_id}: created {os.path.basename(v3_path)} ({renamed}/{total} headers updated)')
+                        else:
+                            print(f'{genome_id}: created {os.path.basename(v3_path)} ({total} headers, no rename needed)')
                         if _nontrivial_lt_map and total > 0 and renamed == 0:
                             print(f'{genome_id}: WARNING: {os.path.basename(orig_path)}: no FASTA '
                                   f'headers matched — locus tag format may differ from what is expected. '

@@ -79,7 +79,7 @@ class GenBankFile(GenomeFile):
 
         Contigs are renamed using contig_ids (if provided, matched by position) or
         auto-generated as {genome_id}{contig_format.format(n=counter)}.
-        Locus tags are renamed to {genome_id}_{n:06d}.
+        Locus tags are renamed to {genome_id}_{n:05d}.
         Old identifiers are preserved as old_locus_tag qualifiers.
 
         Returns (contig_map, lt_map) where both are {old_id: new_id} dicts.
@@ -112,7 +112,7 @@ class GenBankFile(GenomeFile):
                 old_lt = feature.qualifiers['locus_tag'][0]
                 if old_lt not in lt_map:
                     lt_counter += 1
-                    lt_map[old_lt] = f'{genome_id}_{str(lt_counter).zfill(6)}'
+                    lt_map[old_lt] = f'{genome_id}_{str(lt_counter).zfill(5)}'
                 new_lt = lt_map[old_lt]
                 feature.qualifiers['locus_tag'] = [new_lt]
                 if 'old_locus_tag' not in feature.qualifiers:

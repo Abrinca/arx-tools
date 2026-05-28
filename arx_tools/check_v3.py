@@ -8,7 +8,7 @@ from Bio import SeqIO
 
 from .utils import contig_format_to_regex
 
-_GENE_DIGITS = 6
+_GENE_DIGITS = 5
 _DEFAULT_CONTIG_FORMAT = '_scf{n}'
 
 

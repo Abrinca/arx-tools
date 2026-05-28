@@ -149,15 +149,14 @@ def _apply_gene_tag_map_to_file(src: str, dst: str, gene_tag_map: dict, is_eggno
 
 def _extend_gene_tag_map(gene_tag_map: dict) -> dict:
     """
-    Return a copy of gene_tag_map extended with 5-digit-padded variant keys.
+    Return a copy of gene_tag_map extended with identity entries for v3 locus tag values.
 
     Annotation files and derived FASTA files (FAA/FFN) may have been generated
     against arx-assigned 5-digit locus tags (e.g. GENOME_ID_00001) even when the
     source GBK stores external locus tags such as NCBI RefSeq IDs.  In those cases
-    gene_tag_map only maps NCBI_TAG → GENOME_ID_000001 and a direct lookup of
-    GENOME_ID_00001 fails.  This function adds GENOME_ID_00001 → GENOME_ID_000001
-    entries derived from the v3 values already in gene_tag_map so those files can
-    be renamed correctly.
+    gene_tag_map only maps NCBI_TAG → GENOME_ID_00001 and a direct lookup of
+    GENOME_ID_00001 fails.  This function adds GENOME_ID_00001 → GENOME_ID_00001
+    identity entries so those files can be matched and renamed correctly.
     """
     extended = dict(gene_tag_map)
     for v3_tag in gene_tag_map.values():
@@ -165,7 +164,7 @@ def _extend_gene_tag_map(gene_tag_map: dict) -> dict:
         if sep < 0:
             continue
         digits_str = v3_tag[sep + 1:]
-        if not digits_str.isdigit() or len(digits_str) < 6:
+        if not digits_str.isdigit() or len(digits_str) < 5:
             continue
         number = int(digits_str)
         if number > 99999:
@@ -577,20 +576,24 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                     print(f'{genome_id}: created .v3 for {annotation_count} annotation file(s)')
 
             # 2e. Create .v3 for existing derived files (skipped when create_from_file, as they'll be regenerated).
+            #     Use genome.json paths for GFF/FAA/FFN so Bakta (.gff3) and other non-standard
+            #     extensions are handled correctly; fall back to gbk_stem heuristic if not set.
             if not create_from_file:
-                for ext in ('.fna', '.gff', '.faa', '.ffn'):
-                    orig_path = gbk_stem + ext
+                _derived = [
+                    ('gff', genome_json.get('cds_tool_gff_file'), gbk_stem + '.gff'),
+                    ('faa', genome_json.get('cds_tool_faa_file'), gbk_stem + '.faa'),
+                    ('ffn', genome_json.get('cds_tool_ffn_file'), gbk_stem + '.ffn'),
+                ]
+                for file_type, json_filename, fallback_path in _derived:
+                    if json_filename:
+                        orig_path = os.path.join(genome.path, json_filename)
+                    else:
+                        orig_path = fallback_path
                     if not os.path.exists(orig_path):
                         continue
                     v3_path = orig_path + '.v3'
                     v3_created.add(v3_path)
-                    if ext == '.fna':
-                        renamed = _apply_contig_map_to_fna(orig_path, v3_path, contig_map)
-                        print(f'{genome_id}: created {os.path.basename(v3_path)} ({renamed} contig headers updated)')
-                        if contig_map and renamed == 0:
-                            print(f'{genome_id}: WARNING: {os.path.basename(orig_path)}: no contig headers '
-                                  f'matched — seqid format may not be supported. Check manually.')
-                    elif ext == '.gff':
+                    if file_type == 'gff':
                         seqid_changed, attr_renamed = _apply_maps_to_gff(
                             orig_path, v3_path, contig_map, extended_gene_tag_map)
                         if _nontrivial_lt_map or attr_renamed > 0:
@@ -611,7 +614,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                                 print(f'{genome_id}: NOTE: {os.path.basename(orig_path)}: protein_id '
                                       f'attributes (gnl|C|... format) are Prokka sequential IDs with no '
                                       f'locus_tag mapping — left as-is (not used by downstream tools)')
-                    else:  # .faa / .ffn
+                    else:  # faa / ffn
                         renamed, total = _apply_gene_tag_map_to_fasta(
                             orig_path, v3_path, extended_gene_tag_map)
                         if _nontrivial_lt_map:

@@ -24,6 +24,10 @@ Four distinct annotation-tool output formats appear in the real data:
 
   FAM1079-i1-1.1 (arx_container + arx_container_perf)
     check_genome_v3 reports NOT v3 for both copies
+
+  Bakta (thomas-1.1)
+    Seqid:    contig_1  (plain contig ID, direct match in contig_map)
+    Locus ID: thomas-1.1_00005  (bare locus tag, no prefix/suffix → direct lookup)
 """
 import os
 import re
@@ -42,7 +46,7 @@ from arx_tools.rename_genbank import GenBankFile
 # ── path constants ─────────────────────────────────────────────────────────────
 
 _PROKKA_DIR = (
-    '/home/sandro/Documents/Abrinca'
+    '/home/sandro/Documents/Abrinca/cases'
     '/20x84EH010_ID1695.003/genomes/20x84EH010_ID1695.003'
 )
 _PROKKA_GBK = os.path.join(_PROKKA_DIR, '20x84EH010_ID1695.003.gbk')
@@ -85,6 +89,13 @@ _FAM20446_GBK = os.path.join(_FAM20446_DIR, '2_cds/FAM20446-i1-1.1.gbk')
 _FAM20446_GFF = os.path.join(_FAM20446_DIR, '2_cds/FAM20446-i1-1.1.gff')
 _FAM20446_FNA = os.path.join(_FAM20446_DIR, '1_assembly/FAM20446-i1-1.fna')
 _FAM20446_GENOME_ID = 'FAM20446-i1-1.1'
+
+# Bakta — plain contig IDs, bare locus tag feature IDs (no Prokka suffix, no PGAP prefix)
+_BAKTA_DIR = '/home/sandro/Documents/Abrinca/cases/bakta'
+_BAKTA_GBK = os.path.join(_BAKTA_DIR, 'thomas-1.1.gbff')
+_BAKTA_FNA = os.path.join(_BAKTA_DIR, 'thomas-1.1.fna')
+_BAKTA_GFF = os.path.join(_BAKTA_DIR, 'thomas-1.1.gff3')
+_BAKTA_GENOME_ID = 'thomas-1.1'
 
 
 # ── Prokka tests ───────────────────────────────────────────────────────────────
@@ -473,3 +484,115 @@ class TestFamInHouseGffRename(unittest.TestCase):
         )
         self.assertTrue(expected.search(content),
                         'Expected gene- IDs with 6-digit locus tags in renamed GFF')
+
+
+# ── Bakta (plain contig IDs, bare locus tag feature IDs) ──────────────────────
+
+@unittest.skipUnless(os.path.exists(_BAKTA_GBK), 'Bakta genome not available')
+class TestBaktaContigRename(unittest.TestCase):
+    """Bakta GBK uses plain contig_N IDs; normalize() maps them to v3 scf IDs."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = self._tmp.name
+        out_gbk = os.path.join(self.tmp, 'out.gbk')
+        self.contig_map, self.lt_map = GenBankFile(_BAKTA_GBK).normalize(
+            out=out_gbk, genome_id=_BAKTA_GENOME_ID
+        )
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_contig_map_first_contig(self):
+        """contig_1 → thomas-1.1_scf1."""
+        self.assertIn('contig_1', self.contig_map)
+        self.assertEqual(self.contig_map['contig_1'], f'{_BAKTA_GENOME_ID}_scf1')
+
+    def test_lt_map_uses_6_digit_values(self):
+        """5-digit Bakta locus tags are mapped to 6-digit v3 locus tags."""
+        v3_pattern = re.compile(rf'^{re.escape(_BAKTA_GENOME_ID)}_\d{{6}}$')
+        for new_lt in self.lt_map.values():
+            self.assertRegex(new_lt, v3_pattern)
+
+
+@unittest.skipUnless(os.path.exists(_BAKTA_FNA), 'Bakta FNA not available')
+class TestBaktaFnaRename(unittest.TestCase):
+    """_apply_contig_map_to_fna renames plain contig_N headers to v3 scf IDs."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = self._tmp.name
+        out_gbk = os.path.join(self.tmp, 'out.gbk')
+        self.contig_map, _ = GenBankFile(_BAKTA_GBK).normalize(
+            out=out_gbk, genome_id=_BAKTA_GENOME_ID
+        )
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_fna_headers_renamed(self):
+        """contig_1 header is replaced with thomas-1.1_scf1."""
+        out_fna = os.path.join(self.tmp, 'out.fna')
+        count = _apply_contig_map_to_fna(_BAKTA_FNA, out_fna, self.contig_map)
+        self.assertGreater(count, 0, 'Expected at least one contig to be renamed')
+        with open(out_fna) as f:
+            first_header = f.readline().strip()
+        self.assertTrue(first_header.startswith(f'>{_BAKTA_GENOME_ID}_scf'),
+                        f'Unexpected FNA header: {first_header!r}')
+        self.assertNotIn('contig_', first_header)
+
+
+@unittest.skipUnless(os.path.exists(_BAKTA_GFF), 'Bakta GFF not available')
+class TestBaktaGffRename(unittest.TestCase):
+    """_apply_maps_to_gff handles Bakta's plain seqids and bare locus tag IDs."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = self._tmp.name
+        out_gbk = os.path.join(self.tmp, 'out.gbk')
+        self.contig_map, lt_map = GenBankFile(_BAKTA_GBK).normalize(
+            out=out_gbk, genome_id=_BAKTA_GENOME_ID
+        )
+        self.extended_lt_map = _extend_gene_tag_map(lt_map)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_gff_seqid_renamed(self):
+        """contig_1 seqids are replaced with thomas-1.1_scf1."""
+        out_gff = os.path.join(self.tmp, 'out.gff')
+        sc, _ = _apply_maps_to_gff(_BAKTA_GFF, out_gff, self.contig_map, self.extended_lt_map)
+        self.assertGreater(sc, 0, 'Expected at least one seqid to be renamed')
+        feature_lines = []
+        with open(out_gff) as f:
+            for line in f:
+                if not line.startswith('#') and '\t' in line:
+                    feature_lines.append(line)
+                    if len(feature_lines) >= 20:
+                        break
+        for line in feature_lines:
+            seqid = line.split('\t', 1)[0]
+            self.assertFalse(seqid.startswith('contig_'),
+                             f'Plain contig_ seqid not renamed: {seqid!r}')
+            self.assertTrue(seqid.startswith(_BAKTA_GENOME_ID),
+                            f'Unexpected seqid: {seqid!r}')
+
+    def test_gff_bare_locus_tag_ids_renamed(self):
+        """ID=thomas-1.1_00005 (bare locus tag) is renamed to 6-digit ID via direct lookup."""
+        out_gff = os.path.join(self.tmp, 'out.gff')
+        _, ar = _apply_maps_to_gff(_BAKTA_GFF, out_gff, self.contig_map, self.extended_lt_map)
+        self.assertGreater(ar, 0, 'Expected at least one ID= attribute to be renamed')
+        feature_lines = []
+        with open(out_gff) as f:
+            for line in f:
+                if not line.startswith('#') and '\t' in line:
+                    feature_lines.append(line)
+                    if len(feature_lines) >= 20:
+                        break
+        content = ''.join(feature_lines)
+        old_5digit = re.compile(rf'ID={re.escape(_BAKTA_GENOME_ID)}_\d{{5}}[^0-9]')
+        new_6digit = re.compile(rf'ID={re.escape(_BAKTA_GENOME_ID)}_\d{{6}}')
+        self.assertFalse(old_5digit.search(content),
+                         'Old 5-digit locus tag ID still present after rename')
+        self.assertTrue(new_6digit.search(content),
+                        'No new 6-digit locus tag ID found after rename')

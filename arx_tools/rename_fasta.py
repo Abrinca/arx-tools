@@ -35,6 +35,21 @@ class FastaFile(GenomeFile):
         if validate:
             self.validate_locus_tags(locus_tag_prefix=new_locus_tag_prefix)
 
+    def rename_by_map(self, out: str, lt_map: dict, update_path: bool = True) -> None:
+        with open(self.path) as f_in, open(out, 'w') as f_out:
+            for line in f_in:
+                if line.startswith('>'):
+                    parts = line[1:].split(None, 1)
+                    old_tag = parts[0]
+                    if old_tag not in lt_map:
+                        raise ValueError(f'Locus tag {old_tag!r} not found in lt_map. {self.path=}')
+                    suffix = (' ' + parts[1]) if len(parts) > 1 else '\n'
+                    f_out.write(f'>{lt_map[old_tag]}{suffix}')
+                else:
+                    f_out.write(line)
+        if update_path:
+            self.path = out
+
     def get_contig_ids(self) -> list[str]:
         """Return contig IDs (first word of each header line) in order."""
         ids = []

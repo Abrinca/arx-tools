@@ -41,6 +41,34 @@ class GffFile(GenomeFile):
         if validate:
             self.validate_locus_tags(locus_tag_prefix=new_locus_tag_prefix)
 
+    def rename_by_map(self, out: str, lt_map: dict, update_path: bool = True) -> None:
+        with open(self.path) as f_in, open(out, 'w') as f_out:
+            for line in f_in:
+                if line == '##FASTA\n':
+                    f_out.write(line)
+                    f_out.write(f_in.read())
+                    break
+                if line.startswith('#') or not line.strip():
+                    f_out.write(line)
+                    continue
+                try:
+                    data = self._extract_gff_data(line)
+                except AssertionError:
+                    f_out.write(line)
+                    continue
+                if 'locus_tag' not in data:
+                    f_out.write(line)
+                    continue
+                old_tag = data['locus_tag']
+                if old_tag not in lt_map:
+                    raise ValueError(f'Locus tag {old_tag!r} not found in lt_map. {self.path=}')
+                new_tag = lt_map[old_tag]
+                cols = line.split('\t')
+                cols[8] = cols[8].replace(old_tag, new_tag)
+                f_out.write('\t'.join(cols))
+        if update_path:
+            self.path = out
+
     def detect_locus_tag_prefix(self) -> str:
         with open(self.path) as f:
             for line in f:

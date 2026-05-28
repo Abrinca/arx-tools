@@ -12,3 +12,8 @@ esummary_assembly.dtd
 /arx_tools.egg-info/
 .vscode
 .venv*
+/bin
+/lib
+/lib64
+/include
+/pyvenv.cfg

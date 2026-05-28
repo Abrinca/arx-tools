@@ -501,13 +501,21 @@ def import_genome(
             _, lt_map = gbk.normalize(out=tmp_path, genome_id=genome, contig_ids=canonical_ids, contig_format=contig_format)
             os.replace(tmp_path, gbk.path)
 
-            # After normalization, any provided gff/faa/ffn have stale locus tags.
-            # Remove them so they are regenerated from the normalized GBK below.
+            # After normalization, rename provided gff/faa/ffn in-place using the exact locus tag map.
             with WorkingDirectory(work_dir):
-                for _stale_pattern in ('*.gff', '*.faa', '*.ffn'):
-                    for _stale_file in glob(_stale_pattern):
-                        logging.info(f'Removing stale derived file after normalization: {_stale_file}')
-                        os.remove(_stale_file)
+                for _gff_name in glob('*.gff'):
+                    _gff = GffFile(os.path.join(work_dir, _gff_name))
+                    _tmp = _gff.path + '.renaming'
+                    _gff.rename_by_map(out=_tmp, lt_map=lt_map, update_path=False)
+                    os.replace(_tmp, _gff.path)
+                    logging.info(f'Renamed locus tags in provided GFF: {_gff_name}')
+                for _fasta_pattern, _label in (('*.faa', 'FAA'), ('*.ffn', 'FFN')):
+                    for _fasta_name in glob(_fasta_pattern):
+                        _fasta = FastaFile(os.path.join(work_dir, _fasta_name))
+                        _tmp = _fasta.path + '.renaming'
+                        _fasta.rename_by_map(out=_tmp, lt_map=lt_map, update_path=False)
+                        os.replace(_tmp, _fasta.path)
+                        logging.info(f'Renamed locus tags in provided {_label}: {_fasta_name}')
 
             # Rename custom annotations (eggnog, .GC, etc.) using the exact locus tag map.
             for _ca in import_settings.find_custom_annotations(work_dir):

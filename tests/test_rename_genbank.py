@@ -101,6 +101,37 @@ class Test(TestCase):
         finally:
             os.remove(path)
 
+    def test_normalize_updates_protein_id(self):
+        """protein_id=C:{old_lt} must be updated to C:{new_lt} alongside locus_tag."""
+        with (tempfile.NamedTemporaryFile(suffix='.gbk', delete=False) as in_f,
+              tempfile.NamedTemporaryFile(suffix='.gbk', delete=False) as out_f):
+            in_path, out_path = in_f.name, out_f.name
+        try:
+            rec = SeqRecord(Seq('ATCGATCG' * 10), id='contig1', name='contig1', description='')
+            rec.annotations['molecule_type'] = 'DNA'
+            cds = SeqFeature(FeatureLocation(0, 9, strand=1), type='CDS')
+            cds.qualifiers['locus_tag'] = ['OLD_00001']
+            cds.qualifiers['protein_id'] = ['C:OLD_00001']
+            rec.features.append(cds)
+            # A second feature without protein_id — must not crash
+            gene = SeqFeature(FeatureLocation(0, 9, strand=1), type='gene')
+            gene.qualifiers['locus_tag'] = ['OLD_00001']
+            rec.features.append(gene)
+            with open(in_path, 'w') as f:
+                SeqIO.write([rec], f, 'genbank')
+
+            GenBankFile(in_path).normalize(out=out_path, genome_id='GENOME')
+
+            with open(out_path) as f:
+                result = list(SeqIO.parse(f, 'genbank'))
+            feat = next(ft for ft in result[0].features if ft.type == 'CDS')
+            self.assertEqual(feat.qualifiers['locus_tag'], ['GENOME_000001'])
+            self.assertEqual(feat.qualifiers['protein_id'], ['C:GENOME_000001'])
+        finally:
+            for p in (in_path, out_path):
+                if os.path.isfile(p):
+                    os.remove(p)
+
     def test_contig_order_fna_gbk_same_contigs_different_order(self):
         """Canonical IDs follow GBK order; FNA contigs are renamed to match regardless of FNA order."""
         with (tempfile.NamedTemporaryFile(suffix='.gbk', delete=False) as gbk_f,

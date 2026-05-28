@@ -498,17 +498,18 @@ def import_genome(
                 canonical_ids = None  # normalize generates them from contig_format
 
             tmp_path = gbk.path + '.normalizing'
-            _, lt_map = gbk.normalize(out=tmp_path, genome_id=genome, contig_ids=canonical_ids, contig_format=contig_format)
+            contig_map, lt_map = gbk.normalize(out=tmp_path, genome_id=genome, contig_ids=canonical_ids, contig_format=contig_format)
             os.replace(tmp_path, gbk.path)
 
             # After normalization, rename provided gff/faa/ffn in-place using the exact locus tag map.
+            # contig_map keys are bare GBK contig IDs; GffFile.rename_by_map strips gnl|X| prefix before lookup.
             with WorkingDirectory(work_dir):
                 for _gff_name in glob('*.gff'):
                     _gff = GffFile(os.path.join(work_dir, _gff_name))
                     _tmp = _gff.path + '.renaming'
-                    _gff.rename_by_map(out=_tmp, lt_map=lt_map, update_path=False)
+                    _gff.rename_by_map(out=_tmp, lt_map=lt_map, contig_id_map=contig_map, update_path=False)
                     os.replace(_tmp, _gff.path)
-                    logging.info(f'Renamed locus tags in provided GFF: {_gff_name}')
+                    logging.info(f'Renamed locus tags and contig IDs in provided GFF: {_gff_name}')
                 for _fasta_pattern, _label in (('*.faa', 'FAA'), ('*.ffn', 'FFN')):
                     for _fasta_name in glob(_fasta_pattern):
                         _fasta = FastaFile(os.path.join(work_dir, _fasta_name))

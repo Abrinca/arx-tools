@@ -444,11 +444,8 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             'delete BLAST databases (will be rebuilt on next import)',
         ]
     ask(v_from=2, v_to=3, actions=actions, folder_structure_dir=folder_structure_dir)
-    genomes_iter = loop_genomes(folder_structure_dir=folder_structure_dir, skip_ignored=skip_ignored)
 
     succeeded = 0
-    failed_count = 0
-    post_check_failed = []
     skipped_not_ready = 0   # --promote: genomes still v2 with no pending .v3 files
     skipped_pending = 0     # normal run: genomes with leftover .v3 files (warn and skip)
 
@@ -474,13 +471,11 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             archive = _promote_v3_files(v3_to_orig, genome_dir=genome.path, genome_id=genome_id)
             print(f'{genome_id}: archived originals → {os.path.basename(archive)}')
             post_check = check_genome_v3(genome.path, genome_id, deep=False, contig_format=contig_format)
-            if post_check.is_v3:
-                print(f'{genome_id}: done (post-check OK)')
-                succeeded += 1
-            else:
+            if not post_check.is_v3:
                 reasons = '; '.join(post_check.issues)
-                print(f'{genome_id}: WARNING: post-check failed: {reasons}')
-                post_check_failed.append(genome_id)
+                raise ValueError(f'{genome_id}: post-check failed after promote: {reasons}')
+            print(f'{genome_id}: done (post-check OK)')
+            succeeded += 1
             deleted = 0
             for fname in os.listdir(genome.path):
                 if any(fname.endswith(ext) for ext in _BLAST_EXTENSIONS):
@@ -505,50 +500,41 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
 
         gbk_filename = genome_json.get('cds_tool_gbk_file')
         if not gbk_filename:
-            print(f'{genome_id}: no cds_tool_gbk_file in genome.json, skipping')
-            continue
-
+            raise ValueError(f'{genome_id}: no cds_tool_gbk_file in genome.json')
         gbk_path = os.path.join(genome.path, gbk_filename)
         if not os.path.exists(gbk_path):
-            print(f'{genome_id}: GBK not found at {gbk_path}, skipping')
-            continue
+            raise ValueError(f'{genome_id}: GBK not found: {gbk_path}')
 
         gbk_stem = os.path.splitext(gbk_path)[0]
-        v3_created = set()   # every .v3 path touched: for cleanup on failure
-        v3_to_orig = {}      # {v3_path: original_path}: only successful files, for promotion
-        failed = False
+        v3_created = set()   # every .v3 path touched: for cleanup on exception
+        v3_to_orig = {}      # {v3_path: original_path}: for promotion
 
-        # 2a. Normalize GBK → gbk.v3
-        gbk_v3 = gbk_path + '.v3'
-        v3_created.add(gbk_v3)
         try:
+            # 2a. Normalize GBK → gbk.v3
+            gbk_v3 = gbk_path + '.v3'
+            v3_created.add(gbk_v3)
             contig_map, gene_tag_map = GenBankFile(gbk_path).normalize(
                 out=gbk_v3, genome_id=genome_id, contig_format=contig_format)
             v3_to_orig[gbk_v3] = gbk_path
             print(f'{genome_id}: created {os.path.basename(gbk_v3)} ({len(gene_tag_map)} locus tags renamed)')
-        except Exception as e:
-            print(f'{genome_id}: ERROR normalizing GBK: {e}')
-            failed = True
 
-        # 2b. Build extended map so annotation/derived files that use arx-assigned
-        #     5-digit locus tags (e.g. GENOME_ID_00001) are also covered when the
-        #     GBK stores external/NCBI locus tags.
-        if not failed:
+            # 2b. Build extended map so annotation/derived files that use arx-assigned
+            #     5-digit locus tags (e.g. GENOME_ID_00001) are also covered when the
+            #     GBK stores external/NCBI locus tags.
             extended_gene_tag_map = _extend_gene_tag_map(gene_tag_map)
             # True when at least one locus tag actually changes (not an identity map).
             # Used below to suppress false-positive "no renames" warnings for genomes
             # whose locus tags are already v3-compliant.
             _nontrivial_lt_map = any(k != v for k, v in gene_tag_map.items())
 
-        # 2c. Update assembly FNA contig headers
-        if not failed and contig_map:
-            asm_filename = genome_json.get('assembly_fasta_file')
-            if asm_filename:
-                asm_path = os.path.join(genome.path, asm_filename)
-                if os.path.exists(asm_path):
-                    asm_v3 = asm_path + '.v3'
-                    v3_created.add(asm_v3)
-                    try:
+            # 2c. Update assembly FNA contig headers
+            if contig_map:
+                asm_filename = genome_json.get('assembly_fasta_file')
+                if asm_filename:
+                    asm_path = os.path.join(genome.path, asm_filename)
+                    if os.path.exists(asm_path):
+                        asm_v3 = asm_path + '.v3'
+                        v3_created.add(asm_v3)
                         renamed = _apply_contig_map_to_fna(asm_path, asm_v3, contig_map)
                         v3_to_orig[asm_v3] = asm_path
                         print(f'{genome_id}: created {os.path.basename(asm_v3)} ({renamed} contig headers updated)')
@@ -556,48 +542,39 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                             print(f'{genome_id}: WARNING: assembly FNA: no contig headers matched '
                                   f'— the seqid format may not be supported (plain or gnl|X|id). '
                                   f'Check {os.path.basename(asm_path)} manually.')
-                    except Exception as e:
-                        print(f'{genome_id}: ERROR updating assembly FNA: {e}')
-                        failed = True
 
-        # 2d. Update custom annotation files
-        # Continue loop on failure to report all errors before giving up.
-        if not failed and gene_tag_map:
-            annotation_count = 0
-            for annotation in genome_json.get('custom_annotations', []):
-                annotation_path = os.path.join(genome.path, annotation['file'])
-                if not os.path.realpath(annotation_path).startswith(os.path.realpath(genome.path) + os.sep):
-                    print(f'{genome_id}: WARNING: annotation path escapes genome dir, skipping: {annotation["file"]}')
-                    continue
-                if not os.path.exists(annotation_path):
-                    print(f'{genome_id}: custom annotation not found: {annotation["file"]}, skipping')
-                    continue
-                ann_type = annotation['type']
-                is_eggnog = ann_type.startswith('eggnog')
-                annotation_v3 = annotation_path + '.v3'
-                v3_created.add(annotation_v3)
-                try:
+            # 2d. Update custom annotation files
+            if gene_tag_map:
+                annotation_count = 0
+                for annotation in genome_json.get('custom_annotations', []):
+                    annotation_path = os.path.join(genome.path, annotation['file'])
+                    if not os.path.realpath(annotation_path).startswith(os.path.realpath(genome.path) + os.sep):
+                        print(f'{genome_id}: WARNING: annotation path escapes genome dir, skipping: {annotation["file"]}')
+                        continue
+                    if not os.path.exists(annotation_path):
+                        print(f'{genome_id}: custom annotation not found: {annotation["file"]}, skipping')
+                        continue
+                    ann_type = annotation['type']
+                    is_eggnog = ann_type.startswith('eggnog')
+                    annotation_v3 = annotation_path + '.v3'
+                    v3_created.add(annotation_v3)
                     found, total = _apply_gene_tag_map_to_file(annotation_path, annotation_v3, extended_gene_tag_map, is_eggnog=is_eggnog)
                     if total > 0 and found == 0:
                         print(f'{genome_id}: WARNING: {annotation["file"]} (type={ann_type!r}): '
                               f'no locus tags matched: file may be in an unsupported format or use a different column')
                     v3_to_orig[annotation_v3] = annotation_path
                     annotation_count += 1
-                except Exception as e:
-                    print(f'{genome_id}: ERROR updating {annotation["file"]}: {e}')
-                    failed = True
-            if annotation_count:
-                print(f'{genome_id}: created .v3 for {annotation_count} annotation file(s)')
+                if annotation_count:
+                    print(f'{genome_id}: created .v3 for {annotation_count} annotation file(s)')
 
-        # 2e. Create .v3 for existing derived files (skipped when create_from_file, as they'll be regenerated).
-        if not failed and not create_from_file:
-            for ext in ('.fna', '.gff', '.faa', '.ffn'):
-                orig_path = gbk_stem + ext
-                if not os.path.exists(orig_path):
-                    continue
-                v3_path = orig_path + '.v3'
-                v3_created.add(v3_path)
-                try:
+            # 2e. Create .v3 for existing derived files (skipped when create_from_file, as they'll be regenerated).
+            if not create_from_file:
+                for ext in ('.fna', '.gff', '.faa', '.ffn'):
+                    orig_path = gbk_stem + ext
+                    if not os.path.exists(orig_path):
+                        continue
+                    v3_path = orig_path + '.v3'
+                    v3_created.add(v3_path)
                     if ext == '.fna':
                         renamed = _apply_contig_map_to_fna(orig_path, v3_path, contig_map)
                         print(f'{genome_id}: created {os.path.basename(v3_path)} ({renamed} contig headers updated)')
@@ -617,6 +594,11 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                                   f'values renamed — ID=/Parent= format may not be supported '
                                   f'(known: Prokka _gene/_tRNA suffixes, PGAP gene-/cds-/rna-/exon- prefixes). '
                                   f'Check manually.')
+                        with open(v3_path) as _gff:
+                            if any('protein_id=gnl|' in ln for ln in _gff if not ln.startswith('#')):
+                                print(f'{genome_id}: NOTE: {os.path.basename(orig_path)}: protein_id '
+                                      f'attributes (gnl|C|... format) are Prokka sequential IDs with no '
+                                      f'locus_tag mapping — left as-is (not used by downstream tools)')
                     else:  # .faa / .ffn
                         renamed, total = _apply_gene_tag_map_to_fasta(
                             orig_path, v3_path, extended_gene_tag_map)
@@ -626,20 +608,14 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                                   f'headers matched — locus tag format may differ from what is expected. '
                                   f'Check manually.')
                     v3_to_orig[v3_path] = orig_path
-                except Exception as e:
-                    print(f'{genome_id}: ERROR creating {os.path.basename(v3_path)}: {e}')
-                    failed = True
 
-        # On failure: clean up every .v3 file we may have created, leave originals untouched
-        if failed:
+        except Exception:
             for v3_path in v3_created:
                 try:
                     os.unlink(v3_path)
                 except OSError:
                     pass
-            print(f'{genome_id}: FAILED: original files untouched. Fix errors and re-run.')
-            failed_count += 1
-            continue
+            raise
 
         # create_only: stop here — .v3 files are on disk, originals untouched.
         if create_only:
@@ -657,7 +633,6 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
 
         # 3b. For create_from_file=True: regenerate all derived files from the normalized GBK.
         #     For create_from_file=False: derived .v3 files were already promoted in step 3.
-        create_from_file_error = False
         if create_from_file:
             gbk_final = GenBankFile(gbk_path)
             for ext, create_fn in [
@@ -667,25 +642,17 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                 ('.ffn', gbk_final.create_ffn),
             ]:
                 out = gbk_stem + ext
-                try:
-                    if os.path.exists(out):
-                        os.remove(out)
-                    create_fn(out)
-                except Exception as e:
-                    print(f'{genome_id}: ERROR creating {ext}: {e}')
-                    create_from_file_error = True
+                if os.path.exists(out):
+                    os.remove(out)
+                create_fn(out)
 
         # 4. Post-check
         post_check = check_genome_v3(genome.path, genome_id, deep=False, contig_format=contig_format)
-        if post_check.is_v3 and not create_from_file_error:
-            print(f'{genome_id}: done (post-check OK)')
-            succeeded += 1
-        else:
+        if not post_check.is_v3:
             reasons = '; '.join(post_check.issues)
-            if create_from_file_error:
-                reasons = ('derived file regeneration error(s)' + ('; ' + reasons if reasons else '')).rstrip('; ')
-            print(f'{genome_id}: WARNING: post-check failed: {reasons}')
-            post_check_failed.append(genome_id)
+            raise ValueError(f'{genome_id}: post-check failed: {reasons}')
+        print(f'{genome_id}: done (post-check OK)')
+        succeeded += 1
 
         # 5. Delete BLAST databases and stale sequence index files
         deleted = 0
@@ -704,31 +671,24 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
 
     # ── Summary ──────────────────────────────────────────────────────────────
     if create_only:
-        print(f'\nSummary: {succeeded} .v3 files created, {failed_count} failed')
-        if failed_count == 0:
-            print('Re-run with --promote to archive originals and promote .v3 files.')
+        print(f'\nSummary: {succeeded} .v3 files created')
+        print('Re-run with --promote to archive originals and promote .v3 files.')
         return
 
     if promote:
-        print(f'\nSummary: {succeeded} promoted, {skipped_not_ready} not ready, '
-              f'{failed_count} failed, {len(post_check_failed)} failed post-check')
-    else:
-        print(f'\nSummary: {succeeded} migrated, {skipped_pending} skipped (pending .v3), '
-              f'{failed_count} failed, {len(post_check_failed)} failed post-check')
-
-    if failed_count > 0 or post_check_failed:
-        if post_check_failed:
-            print(f'Not bumping to version 3: post-check failures: {", ".join(post_check_failed)}. Fix and re-run.')
+        print(f'\nSummary: {succeeded} promoted, {skipped_not_ready} not ready')
+        if skipped_not_ready > 0:
+            print(f'Not bumping to version 3: {skipped_not_ready} genome(s) still need --create_only. '
+                  f'Run --create_only on remaining genomes, then re-run --promote.')
         else:
-            print('Not bumping to version 3: fix errors and re-run.')
-    elif skipped_not_ready > 0:
-        print(f'Not bumping to version 3: {skipped_not_ready} genome(s) still need --create_only. '
-              f'Run --create_only on remaining genomes, then re-run --promote.')
-    elif skipped_pending > 0:
-        print(f'Not bumping to version 3: {skipped_pending} genome(s) have pending .v3 files. '
-              f'Run --promote to finish them.')
+            set_folder_structure_version(new_version=3, folder_structure_dir=folder_structure_dir)
     else:
-        set_folder_structure_version(new_version=3, folder_structure_dir=folder_structure_dir)
+        print(f'\nSummary: {succeeded} migrated, {skipped_pending} skipped (pending .v3)')
+        if skipped_pending > 0:
+            print(f'Not bumping to version 3: {skipped_pending} genome(s) have pending .v3 files. '
+                  f'Run --promote to finish them.')
+        else:
+            set_folder_structure_version(new_version=3, folder_structure_dir=folder_structure_dir)
 
 
 def check_v3(folder_structure_dir: str = None, genome_dir: str = None, genome_id: str = None,

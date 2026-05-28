@@ -25,9 +25,33 @@ GENOME_scf1\tProkka\tCDS\t1000\t1900\t.\t+\t0\tID=cds-OLD_000002;Parent=gene-OLD
 ATGC
 """
 
+# Prokka GFF with gnl|X| contig IDs (as produced when input FASTA uses NCBI-style headers)
+SAMPLE_GFF_GNL = """\
+##gff-version 3
+##sequence-region gnl|C|BARE_1 1 40066
+##sequence-region gnl|C|BARE_2 1 39909
+gnl|C|BARE_1\tprokka\tgene\t32\t637\t.\t-\t.\tID=OLD_000001_gene;locus_tag=OLD_000001
+gnl|C|BARE_1\tProdigal:002006\tCDS\t32\t637\t.\t-\t0\tID=OLD_000001;Parent=OLD_000001_gene;locus_tag=OLD_000001;product=hypothetical protein
+gnl|C|BARE_2\tprokka\tgene\t100\t500\t.\t+\t.\tID=OLD_000002_gene;locus_tag=OLD_000002
+gnl|C|BARE_2\tProdigal:002006\tCDS\t100\t500\t.\t+\t0\tID=OLD_000002;Parent=OLD_000002_gene;locus_tag=OLD_000002;product=hypothetical protein
+"""
+
+SAMPLE_GFF_GNL_WITH_FASTA = SAMPLE_GFF_GNL + """\
+##FASTA
+>gnl|C|BARE_1
+ATGC
+>gnl|C|BARE_2
+TTTT
+"""
+
 LT_MAP = {
     'OLD_000001': 'NEW_000001',
     'OLD_000002': 'NEW_000002',
+}
+
+CONTIG_ID_MAP = {
+    'BARE_1': 'GENOME_scf1',
+    'BARE_2': 'GENOME_scf2',
 }
 
 
@@ -72,3 +96,44 @@ class Test(unittest.TestCase):
         self.assertIn('##FASTA\n', content)
         self.assertIn('>GENOME_scf1\n', content)
         self.assertIn('##gff-version 3\n', content)
+
+    def test_rename_by_map_with_gnl_contig_ids(self):
+        """GFFs from Prokka on NCBI-style input use gnl|X|bare_id contig IDs.
+        rename_by_map must update ##sequence-region headers and column 0."""
+        src = os.path.join(self.tmp, 'input_gnl.gff')
+        out = os.path.join(self.tmp, 'renamed_gnl.gff')
+        with open(src, 'w') as f:
+            f.write(SAMPLE_GFF_GNL)
+        GffFile(src).rename_by_map(out=out, lt_map=LT_MAP, contig_id_map=CONTIG_ID_MAP, update_path=False)
+        with open(out) as f:
+            content = f.read()
+        # locus tags renamed
+        self.assertIn('locus_tag=NEW_000001', content)
+        self.assertIn('locus_tag=NEW_000002', content)
+        # contig IDs in data column 0 renamed
+        self.assertIn('GENOME_scf1\t', content)
+        self.assertIn('GENOME_scf2\t', content)
+        self.assertNotIn('gnl|C|BARE_1', content)
+        self.assertNotIn('gnl|C|BARE_2', content)
+        # ##sequence-region headers renamed
+        self.assertIn('##sequence-region GENOME_scf1 ', content)
+        self.assertIn('##sequence-region GENOME_scf2 ', content)
+        # original lengths preserved
+        self.assertIn('##sequence-region GENOME_scf1 1 40066', content)
+        self.assertIn('##sequence-region GENOME_scf2 1 39909', content)
+
+    def test_rename_by_map_gnl_embedded_fasta_renamed(self):
+        """Embedded ##FASTA contig headers must also be renamed when contig_id_map is set."""
+        src = os.path.join(self.tmp, 'input_gnl_fasta.gff')
+        out = os.path.join(self.tmp, 'renamed_gnl_fasta.gff')
+        with open(src, 'w') as f:
+            f.write(SAMPLE_GFF_GNL_WITH_FASTA)
+        GffFile(src).rename_by_map(out=out, lt_map=LT_MAP, contig_id_map=CONTIG_ID_MAP, update_path=False)
+        with open(out) as f:
+            content = f.read()
+        self.assertNotIn('gnl|C|BARE_1', content)
+        self.assertNotIn('gnl|C|BARE_2', content)
+        self.assertIn('>GENOME_scf1\n', content)
+        self.assertIn('>GENOME_scf2\n', content)
+        self.assertIn('ATGC\n', content)
+        self.assertIn('TTTT\n', content)

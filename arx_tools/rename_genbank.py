@@ -119,6 +119,8 @@ class GenBankFile(GenomeFile):
                     feature.qualifiers['old_locus_tag'] = [old_lt]
                 elif old_lt not in feature.qualifiers['old_locus_tag']:
                     feature.qualifiers['old_locus_tag'].append(old_lt)
+                if feature.qualifiers.get('protein_id', [None])[0] == f'C:{old_lt}':
+                    feature.qualifiers['protein_id'] = [f'C:{new_lt}']
 
             records.append(rec)
 

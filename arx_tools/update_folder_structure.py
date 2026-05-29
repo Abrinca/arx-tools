@@ -437,12 +437,14 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                               f'(contig ID format in GFF may not be supported). Check manually.')
 
 
-        except Exception:
+        except Exception as e:
             for v3_path in v3_created:
                 try:
                     os.unlink(v3_path)
                 except OSError:
                     pass
+            if not isinstance(e, ValueError):
+                logging.error('Unexpected error processing %s (%s)', genome_id, genome.path)
             raise
 
         # create_only: stop here; .v3 files are on disk, originals untouched.

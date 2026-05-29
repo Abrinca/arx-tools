@@ -3,6 +3,7 @@ Workflow-level tests for the v2→v3 folder-structure upgrade.
 
 Covers:
   _promote_v3_files
+  GenBankFile.normalize_contigs(): contig-only rename, locus tags untouched
   GenBankFile.normalize() → 6-digit locus tags
   from_2_to_3() end-to-end: success, skip, failure-rollback, version bump
   --create_only / --promote two-step workflow
@@ -17,7 +18,6 @@ from Bio import SeqIO
 
 from arx_tools.update_folder_structure import (
     _apply_contig_map_to_fna,
-    _apply_gene_tag_map_to_file,
     _promote_v3_files,
 )
 from arx_tools.check_v3 import check_genome_v3
@@ -103,10 +103,59 @@ class TestPromoteV3Files(TestCase):
                 self.assertIn('2_cds/genome.gbk', tar.getnames())
 
 
-# ── normalize() 6-digit locus tags ───────────────────────────────────────────
+# ── normalize_contigs() ───────────────────────────────────────────────────────
+
+class TestNormalizeContigsOnly(TestCase):
+    """normalize_contigs() renames contig IDs and leaves locus tags untouched."""
+
+    def test_contig_ids_renamed_locus_tags_unchanged(self):
+        with (tempfile.NamedTemporaryFile(suffix='.gbk', delete=False) as gbk_f,
+              tempfile.NamedTemporaryFile(suffix='.gbk', delete=False) as out_f):
+            gbk_path, out_path = gbk_f.name, out_f.name
+
+        try:
+            locus_tags = ['EXT_00001', 'EXT_00002']
+            _write_gbk(gbk_path, [('old_contig', locus_tags)])
+            contig_map = GenBankFile(gbk_path).normalize_contigs(out=out_path, genome_id=GENOME_ID)
+
+            self.assertEqual(contig_map, {'old_contig': f'{GENOME_ID}_scf1'})
+
+            with open(out_path) as f:
+                records = list(SeqIO.parse(f, 'genbank'))
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].id, f'{GENOME_ID}_scf1')
+
+            written_lts = [
+                f.qualifiers['locus_tag'][0]
+                for f in records[0].features
+                if 'locus_tag' in f.qualifiers
+            ]
+            self.assertEqual(written_lts, locus_tags)
+        finally:
+            for p in (gbk_path, out_path):
+                if os.path.exists(p):
+                    os.unlink(p)
+
+    def test_contig_ids_mismatch_raises(self):
+        with (tempfile.NamedTemporaryFile(suffix='.gbk', delete=False) as gbk_f,
+              tempfile.NamedTemporaryFile(suffix='.gbk', delete=False) as out_f):
+            gbk_path, out_path = gbk_f.name, out_f.name
+
+        try:
+            _write_gbk(gbk_path, [('c1', ['T_00001']), ('c2', ['T_00002'])])
+            with self.assertRaises(ValueError):
+                GenBankFile(gbk_path).normalize_contigs(
+                    out=out_path, genome_id=GENOME_ID, contig_ids=['only_one'])
+        finally:
+            for p in (gbk_path, out_path):
+                if os.path.exists(p):
+                    os.unlink(p)
+
+
+# ── normalize() locus tags ────────────────────────────────────────────────────
 
 class TestNormalizeLtDigits(TestCase):
-    """normalize() must produce 6-digit locus tags to match the v3 spec."""
+    """normalize() must produce 6-digit (zero-padded) locus tags accepted by the v3 checker."""
 
     def test_normalize_produces_6_digit_locus_tags(self):
         with (tempfile.NamedTemporaryFile(suffix='.gbk', delete=False) as gbk_f,
@@ -141,7 +190,11 @@ class TestFullUpgradeFlow(TestCase):
     """End-to-end test of the v2→v3 upgrade on a single genome dir."""
 
     def _setup_v2_genome(self, tmp: str) -> str:
-        """Create a minimal v2 genome folder and return its path."""
+        """Create a minimal v2 genome folder and return its path.
+
+        Locus tags are already in clean v3 format (as they would be after a proper v2 import).
+        Only contig IDs use the old format and need updating.
+        """
         genome_dir = os.path.join(tmp, 'organisms', GENOME_ID, 'genomes', GENOME_ID)
         os.makedirs(genome_dir)
 
@@ -149,11 +202,11 @@ class TestFullUpgradeFlow(TestCase):
         fna_path = os.path.join(genome_dir, f'{GENOME_ID}.fna')
         ann_path = os.path.join(genome_dir, f'{GENOME_ID}.KG')
 
-        _write_gbk(gbk_path, [('old_contig_1', ['OLD_00001', 'OLD_00002']),
-                               ('old_contig_2', ['OLD_00003'])])
+        _write_gbk(gbk_path, [('old_contig_1', [f'{GENOME_ID}_000001', f'{GENOME_ID}_000002']),
+                               ('old_contig_2', [f'{GENOME_ID}_000003'])])
         _write_fna(fna_path, ['old_contig_1', 'old_contig_2'])
-        _write_annotation(ann_path, [('OLD_00001', 'K00001'), ('OLD_00002', 'K00002'),
-                                     ('OLD_00003', 'K00003')])
+        _write_annotation(ann_path, [(f'{GENOME_ID}_000001', 'K00001'), (f'{GENOME_ID}_000002', 'K00002'),
+                                     (f'{GENOME_ID}_000003', 'K00003')])
 
         genome_json = {
             'identifier': GENOME_ID,
@@ -172,24 +225,20 @@ class TestFullUpgradeFlow(TestCase):
             result = check_genome_v3(genome_dir, GENOME_ID)
             self.assertFalse(result.is_v3)
 
-    def test_normalize_then_check_v3(self):
-        """Normalize the GBK, update FNA headers, update annotations → post-check passes."""
+    def test_normalize_contigs_then_check_v3(self):
+        """Normalize GBK contig IDs, update FNA headers → post-check passes."""
         with tempfile.TemporaryDirectory() as tmp:
             genome_dir = self._setup_v2_genome(tmp)
             gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
             fna_path = os.path.join(genome_dir, f'{GENOME_ID}.fna')
-            ann_path = os.path.join(genome_dir, f'{GENOME_ID}.KG')
 
             gbk_v3 = gbk_path + '.v3'
-            contig_map, lt_map = GenBankFile(gbk_path).normalize(out=gbk_v3, genome_id=GENOME_ID)
+            contig_map = GenBankFile(gbk_path).normalize_contigs(out=gbk_v3, genome_id=GENOME_ID)
 
             asm_v3 = fna_path + '.v3'
             _apply_contig_map_to_fna(fna_path, asm_v3, contig_map)
 
-            ann_v3 = ann_path + '.v3'
-            _apply_gene_tag_map_to_file(ann_path, ann_v3, lt_map)
-
-            v3_to_orig = {gbk_v3: gbk_path, asm_v3: fna_path, ann_v3: ann_path}
+            v3_to_orig = {gbk_v3: gbk_path, asm_v3: fna_path}
             _promote_v3_files(v3_to_orig, genome_dir=genome_dir, genome_id=GENOME_ID)
 
             result = check_genome_v3(genome_dir, GENOME_ID, deep=True)
@@ -201,7 +250,6 @@ class TestFullUpgradeFlow(TestCase):
                 archived = tar.getnames()
             self.assertTrue(any('gbk' in n for n in archived))
             self.assertTrue(any('fna' in n for n in archived))
-            self.assertTrue(any('.KG' in n for n in archived))
 
     def test_failed_normalization_cleans_up_v3_files(self):
         """If GBK normalisation raises, from_2_to_3 must delete any .v3 files it created."""
@@ -222,7 +270,7 @@ class TestFullUpgradeFlow(TestCase):
                     f.write('partial')
                 raise RuntimeError('simulated disk error')
 
-            with (patch.object(GenBankFile, 'normalize', bad_normalize),
+            with (patch.object(GenBankFile, 'normalize_contigs', bad_normalize),
                   patch.object(ufs, 'ask'),
                   patch.object(ufs, 'set_folder_structure_version')):
                 ufs.from_2_to_3(folder_structure_dir=tmp)
@@ -263,35 +311,6 @@ class TestFullUpgradeFlow(TestCase):
             self.assertFalse(os.path.exists(fna_path + '.v3'))
             self.assertFalse(os.path.exists(os.path.join(genome_dir, f'{GENOME_ID}_v2_backup.tar.gz')))
 
-    def test_failed_annotation_update_cleans_up_all_v3_files(self):
-        """If annotation update raises, all .v3 files are cleaned up."""
-        from unittest.mock import patch
-        from arx_tools import update_folder_structure as ufs
-
-        with tempfile.TemporaryDirectory() as tmp:
-            genome_dir = self._setup_v2_genome(tmp)
-            with open(os.path.join(tmp, 'version.json'), 'w') as f:
-                json.dump({'folder_structure_version': 2}, f)
-
-            gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
-            ann_path = os.path.join(genome_dir, f'{GENOME_ID}.KG')
-            original_ann = open(ann_path).read()
-
-            def bad_annotation(src, dst, lt_map, **__):
-                with open(dst, 'w') as f:
-                    f.write('partial')
-                raise RuntimeError('simulated annotation error')
-
-            with (patch.object(ufs, '_apply_gene_tag_map_to_file', bad_annotation),
-                  patch.object(ufs, 'ask'),
-                  patch.object(ufs, 'set_folder_structure_version')):
-                ufs.from_2_to_3(folder_structure_dir=tmp)
-
-            with open(ann_path) as f:
-                self.assertEqual(f.read(), original_ann)
-            self.assertFalse(os.path.exists(gbk_path + '.v3'))
-            self.assertFalse(os.path.exists(ann_path + '.v3'))
-            self.assertFalse(os.path.exists(os.path.join(genome_dir, f'{GENOME_ID}_v2_backup.tar.gz')))
 
 
 # ── from_2_to_3 skip paths ────────────────────────────────────────────────────
@@ -305,7 +324,7 @@ class TestFrom2To3SkipPaths(TestCase):
         gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
         fna_path = os.path.join(genome_dir, f'{GENOME_ID}.fna')
         contig_ids = gbk_contig_ids or ['old_contig_1']
-        locus_tags = gbk_locus_tags or [['OLD_00001', 'OLD_00002']]
+        locus_tags = gbk_locus_tags or [[f'{GENOME_ID}_000001', f'{GENOME_ID}_000002']]
         _write_gbk(gbk_path, list(zip(contig_ids, locus_tags)))
         _write_fna(fna_path, contig_ids)
         genome_json = {
@@ -385,7 +404,7 @@ class TestVersionBumpBehavior(TestCase):
         os.makedirs(genome_dir)
         gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
         fna_path = os.path.join(genome_dir, f'{GENOME_ID}.fna')
-        _write_gbk(gbk_path, [('old_contig_1', ['OLD_00001', 'OLD_00002'])])
+        _write_gbk(gbk_path, [('old_contig_1', [f'{GENOME_ID}_000001', f'{GENOME_ID}_000002'])])
         _write_fna(fna_path, ['old_contig_1'])
         genome_json = {
             'identifier': GENOME_ID,
@@ -413,7 +432,7 @@ class TestVersionBumpBehavior(TestCase):
                 raise RuntimeError('simulated error')
 
             mock_set_version = MagicMock()
-            with (patch.object(GenBankFile, 'normalize', bad_normalize),
+            with (patch.object(GenBankFile, 'normalize_contigs', bad_normalize),
                   patch.object(ufs, 'ask'),
                   patch.object(ufs, 'set_folder_structure_version', mock_set_version)):
                 ufs.from_2_to_3(folder_structure_dir=tmp)
@@ -447,9 +466,9 @@ class TestCreateOnlyAndPromote(TestCase):
         gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
         fna_path = os.path.join(genome_dir, f'{GENOME_ID}.fna')
         ann_path = os.path.join(genome_dir, f'{GENOME_ID}.KG')
-        _write_gbk(gbk_path, [('old_contig_1', ['OLD_00001', 'OLD_00002'])])
+        _write_gbk(gbk_path, [('old_contig_1', [f'{GENOME_ID}_000001', f'{GENOME_ID}_000002'])])
         _write_fna(fna_path, ['old_contig_1'])
-        _write_annotation(ann_path, [('OLD_00001', 'K00001'), ('OLD_00002', 'K00002')])
+        _write_annotation(ann_path, [(f'{GENOME_ID}_000001', 'K00001'), (f'{GENOME_ID}_000002', 'K00002')])
         genome_json = {
             'identifier': GENOME_ID,
             'cds_tool_gbk_file': f'{GENOME_ID}.gbk',
@@ -472,13 +491,13 @@ class TestCreateOnlyAndPromote(TestCase):
     # ── --create_only ─────────────────────────────────────────────────────────
 
     def test_create_only_creates_v3_files(self):
-        """--create_only writes .v3 files for GBK, assembly FNA, and annotations."""
+        """--create_only writes .v3 files for GBK and assembly FNA (locus tags untouched, annotations skipped)."""
         with tempfile.TemporaryDirectory() as tmp:
             genome_dir = self._setup_fs(tmp)
             self._run(tmp, create_only=True)
             self.assertTrue(os.path.exists(os.path.join(genome_dir, f'{GENOME_ID}.gbk.v3')))
             self.assertTrue(os.path.exists(os.path.join(genome_dir, f'{GENOME_ID}.fna.v3')))
-            self.assertTrue(os.path.exists(os.path.join(genome_dir, f'{GENOME_ID}.KG.v3')))
+            self.assertFalse(os.path.exists(os.path.join(genome_dir, f'{GENOME_ID}.KG.v3')))
 
     def test_create_only_leaves_originals_untouched(self):
         """--create_only must not modify the original GBK or FNA."""

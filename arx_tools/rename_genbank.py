@@ -71,6 +71,38 @@ class GenBankFile(GenomeFile):
     def create_faa(self, faa: str):
         GenBankToFasta.convert(gbk=self.path, out=faa, format='faa')
 
+    def normalize_contigs(self, out: str, genome_id: str,
+                              contig_ids: list[str] = None,
+                              contig_format: str = '_scf{n}') -> dict:
+        """
+        Canonicalize only contig IDs in a GenBank file; locus tags are left untouched.
+
+        Returns contig_map {old_id: new_id}.
+        """
+        contig_map = {}
+        records = []
+
+        with open(self.path) as f:
+            all_records = list(SeqIO.parse(f, 'genbank'))
+
+        if contig_ids is not None:
+            if len(contig_ids) != len(all_records):
+                raise ValueError(
+                    f'contig_ids count ({len(contig_ids)}) does not match number of records '
+                    f'({len(all_records)}) in {self.path}')
+
+        for i, rec in enumerate(all_records):
+            new_contig_id = contig_ids[i] if contig_ids is not None else f'{genome_id}{contig_format.format(n=i + 1)}'
+            contig_map[rec.id] = new_contig_id
+            rec.id = new_contig_id
+            rec.name = new_contig_id[:16]
+            records.append(rec)
+
+        with open(out, 'w') as f:
+            SeqIO.write(records, f, 'genbank')
+
+        return contig_map
+
     def normalize(self, out: str, genome_id: str,
                   contig_ids: list[str] = None,
                   contig_format: str = '_scf{n}') -> tuple[dict, dict]:
@@ -79,7 +111,7 @@ class GenBankFile(GenomeFile):
 
         Contigs are renamed using contig_ids (if provided, matched by position) or
         auto-generated as {genome_id}{contig_format.format(n=counter)}.
-        Locus tags are renamed to {genome_id}_{n:05d}.
+        Locus tags are renamed to {genome_id}_{n:06d}.
         Old identifiers are preserved as old_locus_tag qualifiers.
 
         Returns (contig_map, lt_map) where both are {old_id: new_id} dicts.
@@ -93,9 +125,10 @@ class GenBankFile(GenomeFile):
             all_records = list(SeqIO.parse(f, 'genbank'))
 
         if contig_ids is not None:
-            assert len(contig_ids) == len(all_records), \
-                f'contig_ids count ({len(contig_ids)}) does not match number of records ' \
-                f'({len(all_records)}) in {self.path}'
+            if len(contig_ids) != len(all_records):
+                raise ValueError(
+                    f'contig_ids count ({len(contig_ids)}) does not match number of records '
+                    f'({len(all_records)}) in {self.path}')
 
         for i, rec in enumerate(all_records):
             if contig_ids is not None:
@@ -112,7 +145,7 @@ class GenBankFile(GenomeFile):
                 old_lt = feature.qualifiers['locus_tag'][0]
                 if old_lt not in lt_map:
                     lt_counter += 1
-                    lt_map[old_lt] = f'{genome_id}_{str(lt_counter).zfill(5)}'
+                    lt_map[old_lt] = f'{genome_id}_{str(lt_counter).zfill(6)}'
                 new_lt = lt_map[old_lt]
                 feature.qualifiers['locus_tag'] = [new_lt]
                 if 'old_locus_tag' not in feature.qualifiers:
@@ -234,7 +267,7 @@ class GenBankFile(GenomeFile):
         if type(organism) is list and len(organism) == 1:
             if organism[0] == 'Genus species':
                 raise AssertionError(
-                    f'GBK organism is the Prokka placeholder "Genus species" — Prokka was run without '
+                    f'GBK organism is the Prokka placeholder "Genus species": Prokka was run without '
                     f'--genus/--species so the taxid cannot be auto-detected. '
                     f'Upload an organism.json alongside the GBK with {{"taxid": <int>}}. '
                     f'Find your taxid at https://www.ncbi.nlm.nih.gov/taxonomy'

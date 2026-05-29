@@ -73,14 +73,14 @@ _FAM1079_DIR_PERF = (
 )
 _FAM1079_GENOME_ID = 'FAM1079-i1-1.1'
 
-# PGAP GCF / RefSeq — NZ_ contig accessions, RS-style locus tags
+# PGAP GCF / RefSeq :NZ_ contig accessions, RS-style locus tags
 _NZ_BASE = '/data/repos/arx/arx_container/folder_structure/organisms'
 _NZ_DIR = f'{_NZ_BASE}/MOD1-EC5047/genomes/MOD1-EC5047_GCF_002233245.1_ASM223324v1'
 _NZ_GBK = os.path.join(_NZ_DIR, '2_cds/MOD1-EC5047_GCF_002233245.1_ASM223324v1.gbk')
 _NZ_GFF = os.path.join(_NZ_DIR, '2_cds/MOD1-EC5047_GCF_002233245.1_ASM223324v1.gff')
 _NZ_GENOME_ID = 'MOD1-EC5047_GCF_002233245.1_ASM223324v1'
 
-# arx in-house / FAM* — old 4-digit scf contig IDs, already-6-digit locus tags (identity map)
+# arx in-house / FAM* :old 4-digit scf contig IDs, already-6-digit locus tags (identity map)
 _FAM20446_DIR = (
     '/data/repos/arx/arx_container/folder_structure'
     '/organisms/FAM20446/genomes/FAM20446-i1-1.1'
@@ -90,7 +90,7 @@ _FAM20446_GFF = os.path.join(_FAM20446_DIR, '2_cds/FAM20446-i1-1.1.gff')
 _FAM20446_FNA = os.path.join(_FAM20446_DIR, '1_assembly/FAM20446-i1-1.fna')
 _FAM20446_GENOME_ID = 'FAM20446-i1-1.1'
 
-# Bakta — plain contig IDs, bare locus tag feature IDs (no Prokka suffix, no PGAP prefix)
+# Bakta :plain contig IDs, bare locus tag feature IDs (no Prokka suffix, no PGAP prefix)
 _BAKTA_DIR = '/home/sandro/Documents/Abrinca/cases/bakta'
 _BAKTA_GBK = os.path.join(_BAKTA_DIR, 'thomas-1.1.gbff')
 _BAKTA_FNA = os.path.join(_BAKTA_DIR, 'thomas-1.1.fna')

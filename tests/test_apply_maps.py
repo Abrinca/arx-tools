@@ -814,7 +814,7 @@ class TestImportGenomeProkkaFnaGnlNorm(TestCase):
         self.assertEqual(self._normalize_ids(fna_ids), gbk_ids)
 
     def test_bare_ids_unchanged(self):
-        """Bare IDs (no pipe) are returned as-is — non-Prokka genomes unaffected."""
+        """Bare IDs (no pipe) are returned as-is; non-Prokka genomes unaffected."""
         ids = ['ALNJDMAK_1', 'ALNJDMAK_2']
         self.assertEqual(self._normalize_ids(ids), ids)
 

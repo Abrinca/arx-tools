@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import logging
 import shutil
@@ -106,107 +107,6 @@ def from_1_to_2(folder_structure_dir: str = None, skip_ignored=False, sanity_che
     set_folder_structure_version(new_version=v_to, folder_structure_dir=folder_structure_dir)
 
 
-def _apply_gene_tag_map_to_file(src: str, dst: str, gene_tag_map: dict, is_eggnog: bool = False) -> tuple[int, int]:
-    """
-    Write a locus-tag-renamed copy of a tab-separated annotation file to dst.
-
-    First column of each non-comment line is the locus_tag.
-    Eggnog files may use "prefix|locus_tag" format: only the part after | is mapped.
-
-    Returns (found, total): counts of data lines where the locus tag was / was not in gene_tag_map.
-    """
-    with open(src) as f:
-        lines = f.readlines()
-
-    matched = total = 0
-    result = []
-    for line in lines:
-        if line.startswith('#') or not line.strip():
-            result.append(line)
-            continue
-        total += 1
-        cols = line.split('\t', 1)
-        raw_tag = cols[0]
-        if is_eggnog and '|' in raw_tag:
-            prefix, locus_tag = raw_tag.rsplit('|', 1)
-            if locus_tag in gene_tag_map:
-                matched += 1
-                new_tag = f'{prefix}|{gene_tag_map[locus_tag]}'
-            else:
-                new_tag = raw_tag
-        else:
-            if raw_tag in gene_tag_map:
-                matched += 1
-                new_tag = gene_tag_map[raw_tag]
-            else:
-                new_tag = raw_tag
-        result.append(new_tag + ('\t' + cols[1] if len(cols) > 1 else '\n'))
-
-    with open(dst, 'w') as f:
-        f.writelines(result)
-    return matched, total
-
-
-def _extend_gene_tag_map(gene_tag_map: dict) -> dict:
-    """
-    Return a copy of gene_tag_map extended with identity entries for v3 locus tag values.
-
-    Annotation files and derived FASTA files (FAA/FFN) may have been generated
-    against arx-assigned 5-digit locus tags (e.g. GENOME_ID_00001) even when the
-    source GBK stores external locus tags such as NCBI RefSeq IDs.  In those cases
-    gene_tag_map only maps NCBI_TAG → GENOME_ID_00001 and a direct lookup of
-    GENOME_ID_00001 fails.  This function adds GENOME_ID_00001 → GENOME_ID_00001
-    identity entries so those files can be matched and renamed correctly.
-    """
-    extended = dict(gene_tag_map)
-    for v3_tag in gene_tag_map.values():
-        sep = v3_tag.rfind('_')
-        if sep < 0:
-            continue
-        digits_str = v3_tag[sep + 1:]
-        if not digits_str.isdigit() or len(digits_str) < 5:
-            continue
-        number = int(digits_str)
-        if number > 99999:
-            continue
-        five_digit_key = v3_tag[:sep + 1] + f'{number:05d}'
-        if five_digit_key not in extended:
-            extended[five_digit_key] = v3_tag
-    return extended
-
-
-def _apply_gene_tag_map_to_fasta(src: str, dst: str, gene_tag_map: dict) -> tuple[int, int]:
-    """
-    Write a locus-tag-renamed copy of a FASTA file to dst.
-
-    Returns (renamed, total): count of headers renamed and total header count.
-    Callers can compare the two to warn when no renames occurred despite a non-trivial map.
-    """
-    with open(src) as f:
-        lines = f.readlines()
-    renamed = total = 0
-    result = []
-    for line in lines:
-        if line.startswith('>'):
-            total += 1
-            parts = line[1:].split(None, 1)
-            old_id = parts[0]
-            rest = (' ' + parts[1]) if len(parts) > 1 else '\n'
-            new_id = gene_tag_map.get(old_id)
-            if new_id is None and old_id.startswith('gnl|') and old_id.count('|') >= 2:
-                # Handle gnl|db|TAG format (e.g. gnl|extdb|LOCUS_TAG from NCBI .faa files)
-                sep = old_id.index('|', 4) + 1
-                tag = old_id[sep:]
-                if tag in gene_tag_map:
-                    new_id = old_id[:sep] + gene_tag_map[tag]
-            if new_id is not None:
-                line = f'>{new_id}{rest}'
-                renamed += 1
-        result.append(line)
-    with open(dst, 'w') as f:
-        f.writelines(result)
-    return renamed, total
-
 
 def _apply_contig_map_to_fna(src: str, dst: str, contig_map: dict) -> int:
     """Write a contig-header-renamed copy of a FASTA file to dst. Returns rename count."""
@@ -250,46 +150,24 @@ def _rename_sequence_region(line: str, contig_map: dict) -> str:
     return line
 
 
-def _rename_gff_feature_line(line: str, contig_map: dict, gene_tag_map: dict) -> tuple[str, int, int]:
-    """Rename seqid and attributes in a GFF3 feature line; return (line, seqid_changed, attr_renamed)."""
+def _rename_gff_feature_line(line: str, contig_map: dict) -> tuple[str, int]:
+    """Rename seqid in a GFF3 feature line; return (line, seqid_changed)."""
     cols = line.split('\t')
     if len(cols) != 9:
-        return line, 0, 0
-
-    seqid_changed = 0
+        return line, 0
     new_contig = _resolve_contig_id(cols[0], contig_map)
-    if new_contig is not None:
-        cols[0] = new_contig
-        seqid_changed = 1
-
-    trailing = '\n' if cols[8].endswith('\n') else ''
-    attr_renamed = 0
-    new_attrs = []
-    for attr in cols[8].rstrip('\n').split(';'):
-        if '=' in attr:
-            key, val = attr.split('=', 1)
-            new_val = _lookup_gene_tag(val, gene_tag_map)
-            new_attrs.append(f'{key}={new_val}')
-            if key in ('ID', 'Parent', 'locus_tag') and new_val != val:
-                attr_renamed += 1
-        else:
-            new_attrs.append(attr)
-    cols[8] = ';'.join(new_attrs) + trailing
-    return '\t'.join(cols), seqid_changed, attr_renamed
+    if new_contig is None:
+        return line, 0
+    cols[0] = new_contig
+    return '\t'.join(cols), 1
 
 
-def _apply_maps_to_gff(src: str, dst: str, contig_map: dict, gene_tag_map: dict) -> tuple[int, int]:
-    """
-    Write a renamed copy of a GFF file to dst.
-
-    Returns (seqid_changed, attr_renamed). A zero attr_renamed despite a non-empty
-    gene_tag_map means the GFF uses an unsupported feature-ID format.
-    """
+def _apply_contig_map_to_gff(src: str, dst: str, contig_map: dict) -> int:
+    """Write a contig-seqid-renamed copy of a GFF file to dst. Returns seqid_changed count."""
     with open(src) as f:
         lines = f.readlines()
 
     seqid_changed = 0
-    attr_renamed = 0
     in_fasta = False
     result = []
     for line in lines:
@@ -305,14 +183,13 @@ def _apply_maps_to_gff(src: str, dst: str, contig_map: dict, gene_tag_map: dict)
         elif line.startswith('##sequence-region'):
             line = _rename_sequence_region(line, contig_map)
         elif not line.startswith('#') and line.strip():
-            line, sc, ar = _rename_gff_feature_line(line, contig_map, gene_tag_map)
+            line, sc = _rename_gff_feature_line(line, contig_map)
             seqid_changed += sc
-            attr_renamed += ar
         result.append(line)
 
     with open(dst, 'w') as f:
         f.writelines(result)
-    return seqid_changed, attr_renamed
+    return seqid_changed
 
 
 def _resolve_contig_id(contig_id: str, contig_map: dict) -> str | None:
@@ -327,40 +204,24 @@ def _resolve_contig_id(contig_id: str, contig_map: dict) -> str | None:
     return None
 
 
-# Prokka appends feature-type suffixes to locus tags in GFF3 ID attributes (e.g. GENOME_00001_gene).
-_PROKKA_FEATURE_SUFFIXES = (
-    '_gene', '_tRNA', '_rRNA', '_tmRNA', '_repeat_region',
-    '_misc_RNA', '_CRISPR', '_ncRNA',
-)
 
-# PGAP prefixes feature-type to locus tags in GFF3 IDs (e.g. gene-RS00001, rna-RS00150).
-# cds- may use a protein accession (e.g. cds-WP_012211193.1); those aren't in gene_tag_map and pass through.
-_PGAP_FEATURE_PREFIXES = ('gene-', 'cds-', 'rna-', 'exon-', 'id-')
+def _locus_tags_need_rename(gbk_path: str, genome_id: str) -> bool:
+    """
+    Return True if the GBK contains locus tags but none start with '{genome_id}_'.
 
-
-def _lookup_gene_tag(val: str, gene_tag_map: dict) -> str:
-    """Look up val with fallbacks for Prokka suffix and PGAP prefix conventions; return val unchanged if not found."""
-    new_val = gene_tag_map.get(val)
-    if new_val is not None:
-        return new_val
-    # Prokka: locus_tag_feature_type (trailing underscore-prefixed suffix)
-    for suffix in _PROKKA_FEATURE_SUFFIXES:
-        if val.endswith(suffix):
-            base = val[:-len(suffix)]
-            if base in gene_tag_map:
-                return gene_tag_map[base] + suffix
-    # PGAP: feature_type-locus_tag (leading hyphen-terminated prefix)
-    for prefix in _PGAP_FEATURE_PREFIXES:
-        if val.startswith(prefix):
-            rest = val[len(prefix):]
-            if rest in gene_tag_map:
-                return prefix + gene_tag_map[rest]
-            # exon-locus_tag-N: locus tag followed by a hyphen + integer exon number
-            if '-' in rest:
-                base, sep, exon_n = rest.rpartition('-')
-                if exon_n.isdigit() and base in gene_tag_map:
-                    return f'{prefix}{gene_tag_map[base]}{sep}{exon_n}'
-    return val
+    Scans the file as text (no BioPython parse) so it's fast even for large GBKs.
+    Returns False if locus tags are already arx-assigned, or if there are no locus tags.
+    """
+    prefix = f'/locus_tag="{genome_id}_'
+    found_any = False
+    with open(gbk_path) as f:
+        for line in f:
+            s = line.lstrip()
+            if s.startswith('/locus_tag="'):
+                found_any = True
+                if s.startswith(prefix):
+                    return False
+    return found_any
 
 
 _BLAST_EXTENSIONS = {
@@ -398,21 +259,22 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
     """
     Upgrade folder structure from v2 to v3.
 
+    Only contig IDs are updated; locus tags are left untouched (v2 genomes already have
+    clean locus tags from the original import).
+
     Per genome:
       1. Shallow v3 check: skip if already v3; warn if a partial upgrade (.v3 files) exists.
-      2. Generate .v3 intermediate files for source files (gbk, assembly fna, annotations).
+      2. Generate .v3 intermediate files (gbk, assembly fna, gff).
          Originals are untouched during this phase.
-      3. Only once all .v3 files are successfully written: archive originals into a single
-         {genome_id}_v2_backup.tar.gz and rename .v3 files into place.
-      3b. Update derived files (.fna, .gff, .faa, .ffn) by renaming IDs in-place to preserve
-          custom content. With --create_from_file, regenerate all derived files from the GBK.
+      3. Archive originals into {genome_id}_v2_backup.tar.gz and promote .v3 files into place.
+         With --create_from_file, regenerate gff/faa/ffn from the updated GBK instead.
       4. Post-check to verify success.
-      5. Delete BLAST databases (they reference stale contig/locus IDs).
+      5. Delete BLAST databases (they reference stale contig IDs; rebuild manually in arx).
 
     Two-step workflow:
-      --create_only  Stop after step 2 — generate .v3 files without promoting them.
+      --create_only  Stop after step 2: generate .v3 files without promoting them.
                      Inspect the generated files, then re-run with --promote to finish.
-      --promote      Skip step 2 — promote .v3 files left by a previous --create_only run.
+      --promote      Skip step 2: promote .v3 files left by a previous --create_only run.
     """
     folder_structure_dir = _get_folder_structure_dir(folder_structure_dir)
 
@@ -420,39 +282,41 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
     warnings.filterwarnings('ignore', message='.*Premature end of file.*', module='Bio')
     warnings.filterwarnings('ignore', message='.*Expected sequence length.*', module='Bio')
 
-    derived_action = (
-        'regenerate derived files (.fna, .gff, .faa, .ffn) from GBK (--create_from_file)'
-        if create_from_file else
-        'generate .v3 for existing derived files (.fna, .gff, .faa, .ffn); promote all .v3 files together'
-    )
     if create_only:
         actions = [
             'shallow-check each genome; skip if already v3',
-            'generate .v3 intermediate files for source files (gbk, assembly fna, annotations)',
-            derived_action.split(';')[0].strip() if not create_from_file else derived_action,
-            '(promotion skipped — re-run with --promote to archive originals and promote)',
+            'generate .v3 for gbk, assembly fna, and gff (contig IDs only)',
+            '(promotion skipped; re-run with --promote to archive originals and promote)',
         ]
     elif promote:
         actions = [
             'shallow-check each genome; skip if already v3 or no pending .v3 files',
-            'archive originals into {genome_id}_v2_backup.tar.gz and promote pending .v3 files into place',
+            'archive originals into {genome_id}_v2_backup.tar.gz and promote pending .v3 files',
             'post-check each genome to verify',
-            'delete BLAST databases (will be rebuilt on next import)',
+            'delete BLAST databases (rebuild manually in arx when needed)',
+        ]
+    elif create_from_file:
+        actions = [
+            'shallow-check each genome; skip if already v3',
+            'generate .v3 for gbk and assembly fna (contig IDs only)',
+            'archive originals and regenerate gff/faa/ffn from updated GBK',
+            'post-check each genome to verify',
+            'delete BLAST databases (rebuild manually in arx when needed)',
         ]
     else:
         actions = [
             'shallow-check each genome; skip if already v3',
-            'generate .v3 intermediate files for source files (gbk, assembly fna, annotations)',
-            'archive originals into {genome_id}_v2_backup.tar.gz and promote .v3 files into place',
-            derived_action,
+            'generate .v3 for gbk, assembly fna, and gff (contig IDs only)',
+            'archive originals into {genome_id}_v2_backup.tar.gz and promote .v3 files',
             'post-check each genome to verify',
-            'delete BLAST databases (will be rebuilt on next import)',
+            'delete BLAST databases (rebuild manually in arx when needed)',
         ]
     ask(v_from=2, v_to=3, actions=actions, folder_structure_dir=folder_structure_dir)
 
     succeeded = 0
     skipped_not_ready = 0   # --promote: genomes still v2 with no pending .v3 files
     skipped_pending = 0     # normal run: genomes with leftover .v3 files (warn and skip)
+    skipped_needs_rename = 0  # genomes with external locus tags that need arx --rename first
 
     for genome in loop_genomes(folder_structure_dir=folder_structure_dir, skip_ignored=skip_ignored):
         genome_json = genome.json
@@ -465,7 +329,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             continue
 
         if promote:
-            # --promote: skip creation, only handle .v3 files left by a previous --create_only run.
+            # --promote: only handle .v3 files left by a previous --create_only run.
             if not pre_check.has_pending_v3_files:
                 print(f'{genome_id}: no pending .v3 files, skipping (run with --create_only first)')
                 skipped_not_ready += 1
@@ -510,32 +374,26 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         if not os.path.exists(gbk_path):
             raise ValueError(f'{genome_id}: GBK not found: {gbk_path}')
 
+        if _locus_tags_need_rename(gbk_path, genome_id):
+            print(f'{genome_id}: SKIP: locus tags use external IDs (not arx-renamed); '
+                  f'run arx --rename on this genome first, then re-run the upgrade')
+            skipped_needs_rename += 1
+            continue
+
         gbk_stem = os.path.splitext(gbk_path)[0]
         v3_created = set()   # every .v3 path touched: for cleanup on exception
         v3_to_orig = {}      # {v3_path: original_path}: for promotion
 
         try:
-            # 2a. Normalize GBK → gbk.v3
+            # 2a. Rewrite GBK contig IDs → gbk.v3
             gbk_v3 = gbk_path + '.v3'
             v3_created.add(gbk_v3)
-            contig_map, gene_tag_map = GenBankFile(gbk_path).normalize(
+            contig_map = GenBankFile(gbk_path).normalize_contigs(
                 out=gbk_v3, genome_id=genome_id, contig_format=contig_format)
             v3_to_orig[gbk_v3] = gbk_path
+            print(f'{genome_id}: created {os.path.basename(gbk_v3)} ({len(contig_map)} contig IDs updated)')
 
-            # 2b. Build extended map so annotation/derived files that use arx-assigned
-            #     5-digit locus tags (e.g. GENOME_ID_00001) are also covered when the
-            #     GBK stores external/NCBI locus tags.
-            extended_gene_tag_map = _extend_gene_tag_map(gene_tag_map)
-            # True when at least one locus tag actually changes (not an identity map).
-            # Used below to suppress false-positive "no renames" warnings for genomes
-            # whose locus tags are already v3-compliant.
-            _nontrivial_lt_map = any(k != v for k, v in gene_tag_map.items())
-            if _nontrivial_lt_map:
-                print(f'{genome_id}: created {os.path.basename(gbk_v3)} ({len(gene_tag_map)} locus tags renamed)')
-            else:
-                print(f'{genome_id}: created {os.path.basename(gbk_v3)} ({len(gene_tag_map)} locus tags, no rename needed)')
-
-            # 2c. Update assembly FNA contig headers
+            # 2b. Update assembly FNA contig headers
             if contig_map:
                 asm_filename = genome_json.get('assembly_fasta_file')
                 if asm_filename:
@@ -548,84 +406,26 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                         print(f'{genome_id}: created {os.path.basename(asm_v3)} ({renamed} contig headers updated)')
                         if renamed == 0:
                             print(f'{genome_id}: WARNING: assembly FNA: no contig headers matched '
-                                  f'— the seqid format may not be supported (plain or gnl|X|id). '
+                                  f'(seqid format may not be supported; plain or gnl|X|id expected). '
                                   f'Check {os.path.basename(asm_path)} manually.')
 
-            # 2d. Update custom annotation files
-            if gene_tag_map:
-                annotation_count = 0
-                for annotation in genome_json.get('custom_annotations', []):
-                    annotation_path = os.path.join(genome.path, annotation['file'])
-                    if not os.path.realpath(annotation_path).startswith(os.path.realpath(genome.path) + os.sep):
-                        print(f'{genome_id}: WARNING: annotation path escapes genome dir, skipping: {annotation["file"]}')
-                        continue
-                    if not os.path.exists(annotation_path):
-                        print(f'{genome_id}: custom annotation not found: {annotation["file"]}, skipping')
-                        continue
-                    ann_type = annotation['type']
-                    is_eggnog = ann_type.startswith('eggnog')
-                    annotation_v3 = annotation_path + '.v3'
-                    v3_created.add(annotation_v3)
-                    found, total = _apply_gene_tag_map_to_file(annotation_path, annotation_v3, extended_gene_tag_map, is_eggnog=is_eggnog)
-                    if total > 0 and found == 0:
-                        print(f'{genome_id}: WARNING: {annotation["file"]} (type={ann_type!r}): '
-                              f'no locus tags matched: file may be in an unsupported format or use a different column')
-                    v3_to_orig[annotation_v3] = annotation_path
-                    annotation_count += 1
-                if annotation_count:
-                    print(f'{genome_id}: created .v3 for {annotation_count} annotation file(s)')
+            # 2c. Rewrite GFF contig seqids (use genome.json path to handle .gff3 and other extensions).
+            if not create_from_file and contig_map:
+                gff_filename = genome_json.get('cds_tool_gff_file')
+                gff_path = os.path.join(genome.path, gff_filename) if gff_filename else gbk_stem + '.gff'
+                if os.path.exists(gff_path):
+                    gff_v3 = gff_path + '.v3'
+                    v3_created.add(gff_v3)
+                    seqid_changed = _apply_contig_map_to_gff(gff_path, gff_v3, contig_map)
+                    v3_to_orig[gff_v3] = gff_path
+                    print(f'{genome_id}: created {os.path.basename(gff_v3)} ({seqid_changed} seqids updated)')
+                    if seqid_changed == 0:
+                        print(f'{genome_id}: WARNING: {os.path.basename(gff_path)}: no seqids matched '
+                              f'(contig ID format in GFF may not be supported). Check manually.')
 
-            # 2e. Create .v3 for existing derived files (skipped when create_from_file, as they'll be regenerated).
-            #     Use genome.json paths for GFF/FAA/FFN so Bakta (.gff3) and other non-standard
-            #     extensions are handled correctly; fall back to gbk_stem heuristic if not set.
-            if not create_from_file:
-                _derived = [
-                    ('gff', genome_json.get('cds_tool_gff_file'), gbk_stem + '.gff'),
-                    ('faa', genome_json.get('cds_tool_faa_file'), gbk_stem + '.faa'),
-                    ('ffn', genome_json.get('cds_tool_ffn_file'), gbk_stem + '.ffn'),
-                ]
-                for file_type, json_filename, fallback_path in _derived:
-                    if json_filename:
-                        orig_path = os.path.join(genome.path, json_filename)
-                    else:
-                        orig_path = fallback_path
-                    if not os.path.exists(orig_path):
-                        continue
-                    v3_path = orig_path + '.v3'
-                    v3_created.add(v3_path)
-                    if file_type == 'gff':
-                        seqid_changed, attr_renamed = _apply_maps_to_gff(
-                            orig_path, v3_path, contig_map, extended_gene_tag_map)
-                        if _nontrivial_lt_map or attr_renamed > 0:
-                            print(f'{genome_id}: created {os.path.basename(v3_path)} '
-                                  f'({seqid_changed} seqids, {attr_renamed} attributes updated)')
-                        else:
-                            print(f'{genome_id}: created {os.path.basename(v3_path)} '
-                                  f'({seqid_changed} seqids, no attribute rename needed)')
-                        if contig_map and seqid_changed == 0:
-                            print(f'{genome_id}: WARNING: {os.path.basename(orig_path)}: no seqids '
-                                  f'matched — contig ID format in GFF may not be supported. Check manually.')
-                        if _nontrivial_lt_map and attr_renamed == 0:
-                            print(f'{genome_id}: WARNING: {os.path.basename(orig_path)}: no attribute '
-                                  f'values renamed — GFF attribute format may not be supported. '
-                                  f'Check manually.')
-                        with open(v3_path) as _gff:
-                            if any('protein_id=gnl|' in ln for ln in _gff if not ln.startswith('#')):
-                                print(f'{genome_id}: NOTE: {os.path.basename(orig_path)}: protein_id '
-                                      f'attributes (gnl|C|... format) are Prokka sequential IDs with no '
-                                      f'locus_tag mapping — left as-is (not used by downstream tools)')
-                    else:  # faa / ffn
-                        renamed, total = _apply_gene_tag_map_to_fasta(
-                            orig_path, v3_path, extended_gene_tag_map)
-                        if _nontrivial_lt_map:
-                            print(f'{genome_id}: created {os.path.basename(v3_path)} ({renamed}/{total} headers updated)')
-                        else:
-                            print(f'{genome_id}: created {os.path.basename(v3_path)} ({total} headers, no rename needed)')
-                        if _nontrivial_lt_map and total > 0 and renamed == 0:
-                            print(f'{genome_id}: WARNING: {os.path.basename(orig_path)}: no FASTA '
-                                  f'headers matched — locus tag format may differ from what is expected. '
-                                  f'Check manually.')
-                    v3_to_orig[v3_path] = orig_path
+            if genome_json.get('custom_annotations'):
+                print(f'{genome_id}: NOTE: custom annotation files not modified '
+                      f'(locus tags are unchanged in v2→v3; use arx --rename to standardize locus tags)')
 
         except Exception:
             for v3_path in v3_created:
@@ -635,7 +435,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                     pass
             raise
 
-        # create_only: stop here — .v3 files are on disk, originals untouched.
+        # create_only: stop here; .v3 files are on disk, originals untouched.
         if create_only:
             names = ', '.join(os.path.basename(p) for p in sorted(v3_to_orig))
             print(f'{genome_id}: .v3 files created ({names}). Re-run with --promote to promote.')
@@ -643,14 +443,13 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             continue
 
         # 3. Archive originals → tar.gz, move .v3 → originals.
-        #    For create_from_file=True, also back up derived files as extras (no .v3 intermediate, will be regenerated).
         extra_backup = [gbk_stem + ext for ext in ('.fna', '.gff', '.faa', '.ffn')] if create_from_file else None
         archive = _promote_v3_files(v3_to_orig, genome_dir=genome.path, genome_id=genome_id,
                                     extra_backup=extra_backup)
         print(f'{genome_id}: archived originals → {os.path.basename(archive)}')
 
-        # 3b. For create_from_file=True: regenerate all derived files from the normalized GBK.
-        #     For create_from_file=False: derived .v3 files were already promoted in step 3.
+        # 3b. Regenerate gff/faa/ffn from the updated GBK (create_from_file only;
+        #     otherwise the promoted .v3 files already contain the updated contig seqids).
         if create_from_file:
             gbk_final = GenBankFile(gbk_path)
             for ext, create_fn in [
@@ -668,6 +467,11 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         post_check = check_genome_v3(genome.path, genome_id, deep=False, contig_format=contig_format)
         if not post_check.is_v3:
             reasons = '; '.join(post_check.issues)
+            print(f'\n{"=" * 60}', file=sys.stderr)
+            print(f'ERROR: {genome_id}: post-check failed', file=sys.stderr)
+            for issue in post_check.issues:
+                print(f'  - {issue}', file=sys.stderr)
+            print(f'{"=" * 60}\n', file=sys.stderr)
             raise ValueError(f'{genome_id}: post-check failed: {reasons}')
         print(f'{genome_id}: done (post-check OK)')
         succeeded += 1
@@ -694,17 +498,23 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         return
 
     if promote:
-        print(f'\nSummary: {succeeded} promoted, {skipped_not_ready} not ready')
+        print(f'\nSummary: {succeeded} promoted, {skipped_not_ready} not ready'
+              + (f', {skipped_needs_rename} need arx --rename' if skipped_needs_rename else ''))
         if skipped_not_ready > 0:
             print(f'Not bumping to version 3: {skipped_not_ready} genome(s) still need --create_only. '
                   f'Run --create_only on remaining genomes, then re-run --promote.')
+        elif skipped_needs_rename > 0:
+            print(f'Not bumping to version 3: {skipped_needs_rename} genome(s) need arx --rename first.')
         else:
             set_folder_structure_version(new_version=3, folder_structure_dir=folder_structure_dir)
     else:
-        print(f'\nSummary: {succeeded} migrated, {skipped_pending} skipped (pending .v3)')
+        print(f'\nSummary: {succeeded} migrated, {skipped_pending} skipped (pending .v3)'
+              + (f', {skipped_needs_rename} need arx --rename' if skipped_needs_rename else ''))
         if skipped_pending > 0:
             print(f'Not bumping to version 3: {skipped_pending} genome(s) have pending .v3 files. '
                   f'Run --promote to finish them.')
+        elif skipped_needs_rename > 0:
+            print(f'Not bumping to version 3: {skipped_needs_rename} genome(s) need arx --rename first.')
         else:
             set_folder_structure_version(new_version=3, folder_structure_dir=folder_structure_dir)
 

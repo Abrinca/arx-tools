@@ -151,14 +151,14 @@ class TestCheckV3Shallow(TestCase):
             self.assertFalse(result.is_v3)
             self.assertTrue(any('FNA' in issue for issue in result.issues))
 
-    def test_five_digit_locus_tags_not_v3(self):
-        """zfill(5) output from the old normalizer must not pass as v3."""
+    def test_five_digit_locus_tags_accepted(self):
+        """5-digit arx locus tags (_00001) are accepted for backward compat with old v2 imports."""
         with tempfile.TemporaryDirectory() as tmp:
             _setup_genome(tmp,
                           gbk_contigs=[(f'{GENOME_ID}_scf1', [f'{GENOME_ID}_00001'])],
                           fna_contigs=[f'{GENOME_ID}_scf1'])
             result = check_genome_v3(tmp, GENOME_ID)
-            self.assertFalse(result.is_v3)
+            self.assertTrue(result.is_v3)
 
     def test_seven_digit_locus_tags_accepted(self):
         """Genomes with >999,999 genes produce 7-digit tags via zfill(6): these must pass."""
@@ -322,12 +322,12 @@ class TestCheckV3FaaFfn(TestCase):
             result = check_genome_v3(tmp, GENOME_ID)
             self.assertTrue(result.is_v3)
 
-    def test_old_faa_tag_caught(self):
+    def test_five_digit_faa_tag_accepted(self):
+        """5-digit arx locus tags in FAA headers are accepted for backward compat."""
         with tempfile.TemporaryDirectory() as tmp:
             self._setup(tmp, [f'{GENOME_ID}_00001', f'{GENOME_ID}_00002'])
             result = check_genome_v3(tmp, GENOME_ID)
-            self.assertFalse(result.is_v3)
-            self.assertTrue(any('faa' in issue for issue in result.issues))
+            self.assertTrue(result.is_v3)
 
     def test_gnl_extdb_v3_tag_passes(self):
         """gnl|extdb|GENOME_ID_000001 format should pass the v3 check."""
@@ -336,21 +336,21 @@ class TestCheckV3FaaFfn(TestCase):
             result = check_genome_v3(tmp, GENOME_ID)
             self.assertTrue(result.is_v3)
 
-    def test_gnl_extdb_old_tag_caught(self):
-        """gnl|extdb|GENOME_ID_00001 (5-digit) should fail the v3 check."""
+    def test_gnl_extdb_five_digit_tag_accepted(self):
+        """gnl|extdb|GENOME_ID_00001 (5-digit) is accepted for backward compat."""
         with tempfile.TemporaryDirectory() as tmp:
             self._setup(tmp, [f'gnl|extdb|{GENOME_ID}_00001 some product'])
             result = check_genome_v3(tmp, GENOME_ID)
-            self.assertFalse(result.is_v3)
+            self.assertTrue(result.is_v3)
 
-    def test_ffn_old_tag_caught(self):
+    def test_five_digit_ffn_tag_accepted(self):
+        """5-digit arx locus tags in FFN headers are accepted for backward compat."""
         with tempfile.TemporaryDirectory() as tmp:
             self._setup(tmp,
                         faa_headers=[f'{GENOME_ID}_000001'],
                         ffn_headers=[f'{GENOME_ID}_00001'])
             result = check_genome_v3(tmp, GENOME_ID)
-            self.assertFalse(result.is_v3)
-            self.assertTrue(any('ffn' in issue for issue in result.issues))
+            self.assertTrue(result.is_v3)
 
     def test_missing_faa_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:

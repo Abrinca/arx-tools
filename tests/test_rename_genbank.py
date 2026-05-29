@@ -113,7 +113,7 @@ class Test(TestCase):
             cds.qualifiers['locus_tag'] = ['OLD_00001']
             cds.qualifiers['protein_id'] = ['C:OLD_00001']
             rec.features.append(cds)
-            # A second feature without protein_id — must not crash
+            # A second feature without protein_id; must not crash
             gene = SeqFeature(FeatureLocation(0, 9, strand=1), type='gene')
             gene.qualifiers['locus_tag'] = ['OLD_00001']
             rec.features.append(gene)

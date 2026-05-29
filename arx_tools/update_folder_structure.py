@@ -124,7 +124,10 @@ def _apply_contig_map_to_fna(src: str, dst: str, contig_map: dict) -> int:
             old_id = parts[0]
             new_id = _resolve_contig_id(old_id, contig_map)
             if new_id is None:
-                raise ValueError(f"No contig id found in {line!r}")
+                raise ValueError(
+                    f'{os.path.basename(src)}: contig {old_id!r} not found in contig_map '
+                    f'(GBK has {list(contig_map)[:3]}...); '
+                    f'assembly FNA and GBK contig IDs may be out of sync')
             rest = (' ' + parts[1]) if len(parts) > 1 else '\n'
             line = f'>{new_id}{rest}'
             renamed += 1
@@ -317,6 +320,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
     skipped_not_ready = 0   # --promote: genomes still v2 with no pending .v3 files
     skipped_pending = 0     # normal run: genomes with leftover .v3 files (warn and skip)
     skipped_needs_rename = 0  # genomes with external locus tags that need arx --rename first
+    skipped_errors = 0        # genomes skipped due to missing/misconfigured files
 
     for genome in loop_genomes(folder_structure_dir=folder_structure_dir, skip_ignored=skip_ignored):
         genome_json = genome.json
@@ -342,6 +346,11 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             post_check = check_genome_v3(genome.path, genome_id, deep=False, contig_format=contig_format)
             if not post_check.is_v3:
                 reasons = '; '.join(post_check.issues)
+                print(f'\n{"=" * 60}', file=sys.stderr)
+                print(f'ERROR: {genome_id}: post-check failed after promote', file=sys.stderr)
+                for issue in post_check.issues:
+                    print(f'  - {issue}', file=sys.stderr)
+                print(f'{"=" * 60}\n', file=sys.stderr)
                 raise ValueError(f'{genome_id}: post-check failed after promote: {reasons}')
             print(f'{genome_id}: done (post-check OK)')
             succeeded += 1
@@ -369,10 +378,14 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
 
         gbk_filename = genome_json.get('cds_tool_gbk_file')
         if not gbk_filename:
-            raise ValueError(f'{genome_id}: no cds_tool_gbk_file in genome.json')
+            print(f'{genome_id}: SKIP: no cds_tool_gbk_file in genome.json')
+            skipped_errors += 1
+            continue
         gbk_path = os.path.join(genome.path, gbk_filename)
         if not os.path.exists(gbk_path):
-            raise ValueError(f'{genome_id}: GBK not found: {gbk_path}')
+            print(f'{genome_id}: SKIP: GBK not found: {gbk_path}')
+            skipped_errors += 1
+            continue
 
         if _locus_tags_need_rename(gbk_path, genome_id):
             print(f'{genome_id}: SKIP: locus tags use external IDs (not arx-renamed); '
@@ -423,9 +436,6 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                         print(f'{genome_id}: WARNING: {os.path.basename(gff_path)}: no seqids matched '
                               f'(contig ID format in GFF may not be supported). Check manually.')
 
-            if genome_json.get('custom_annotations'):
-                print(f'{genome_id}: NOTE: custom annotation files not modified '
-                      f'(locus tags are unchanged in v2→v3; use arx --rename to standardize locus tags)')
 
         except Exception:
             for v3_path in v3_created:
@@ -497,24 +507,34 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         print('Re-run with --promote to archive originals and promote .v3 files.')
         return
 
+    def _extra(counts):
+        parts = []
+        if counts.get('rename'):
+            parts.append(f'{counts["rename"]} need arx --rename')
+        if counts.get('errors'):
+            parts.append(f'{counts["errors"]} skipped (config/file errors)')
+        return (', ' + ', '.join(parts)) if parts else ''
+
+    blockers = skipped_needs_rename + skipped_errors
+
     if promote:
         print(f'\nSummary: {succeeded} promoted, {skipped_not_ready} not ready'
-              + (f', {skipped_needs_rename} need arx --rename' if skipped_needs_rename else ''))
+              + _extra({'rename': skipped_needs_rename, 'errors': skipped_errors}))
         if skipped_not_ready > 0:
             print(f'Not bumping to version 3: {skipped_not_ready} genome(s) still need --create_only. '
                   f'Run --create_only on remaining genomes, then re-run --promote.')
-        elif skipped_needs_rename > 0:
-            print(f'Not bumping to version 3: {skipped_needs_rename} genome(s) need arx --rename first.')
+        elif blockers > 0:
+            print(f'Not bumping to version 3: {blockers} genome(s) still need attention (see above).')
         else:
             set_folder_structure_version(new_version=3, folder_structure_dir=folder_structure_dir)
     else:
         print(f'\nSummary: {succeeded} migrated, {skipped_pending} skipped (pending .v3)'
-              + (f', {skipped_needs_rename} need arx --rename' if skipped_needs_rename else ''))
+              + _extra({'rename': skipped_needs_rename, 'errors': skipped_errors}))
         if skipped_pending > 0:
             print(f'Not bumping to version 3: {skipped_pending} genome(s) have pending .v3 files. '
                   f'Run --promote to finish them.')
-        elif skipped_needs_rename > 0:
-            print(f'Not bumping to version 3: {skipped_needs_rename} genome(s) need arx --rename first.')
+        elif blockers > 0:
+            print(f'Not bumping to version 3: {blockers} genome(s) still need attention (see above).')
         else:
             set_folder_structure_version(new_version=3, folder_structure_dir=folder_structure_dir)
 

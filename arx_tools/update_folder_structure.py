@@ -196,15 +196,31 @@ def _apply_contig_map_to_gff(src: str, dst: str, contig_map: dict) -> int:
     return seqid_changed
 
 
+def _strip_gnl_prefix(contig_id: str) -> str:
+    """Strip gnl|X| or similar pipe-delimited prefix, returning the bare ID."""
+    return contig_id.rsplit('|', 1)[1] if '|' in contig_id else contig_id
+
+
+def _strip_version_suffix(contig_id: str) -> str:
+    """Strip NCBI version suffix (.N) from a contig ID, returning the bare accession."""
+    if '.' in contig_id:
+        base, suffix = contig_id.rsplit('.', 1)
+        if suffix.isdigit():
+            return base
+    return contig_id
+
+
 def _resolve_contig_id(contig_id: str, contig_map: dict) -> str | None:
-    """Look up contig_id, stripping Prokka's gnl|X| prefix if needed (GBK keys are bare IDs)."""
+    """Resolve FNA contig ID against GBK-keyed map, tolerating gnl|X| prefixes and version mismatches."""
     new_id = contig_map.get(contig_id)
     if new_id is not None:
         return new_id
-    if '|' in contig_id:
-        base = contig_id.rsplit('|', 1)[1]
-        if base in contig_map:
-            return contig_map[base]
+    base = _strip_gnl_prefix(contig_id)
+    if base != contig_id and base in contig_map:
+        return contig_map[base]
+    for key, val in contig_map.items():
+        if _strip_version_suffix(key) == contig_id:
+            return val
     return None
 
 
@@ -547,15 +563,22 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
 def _gbk_to_assembly(gbk_path: str, fna_path: str) -> tuple[int, str]:
     """Regenerate assembly FNA from GBK sequences (overwrites fna_path). Returns (contig count, backup path)."""
     from Bio import SeqIO
+    orig_descriptions = []
+    with open(fna_path) as f:
+        for line in f:
+            if line.startswith('>'):
+                parts = line[1:].strip().split(None, 1)
+                orig_descriptions.append(parts[1] if len(parts) > 1 else '')
     backup = fna_path + '.bak'
     shutil.copy2(fna_path, backup)
     records = list(SeqIO.parse(gbk_path, 'genbank'))
     with open(fna_path, 'w') as f:
-        for rec in records:
-            f.write(f'>{rec.id}\n')
+        for i, rec in enumerate(records):
+            desc = orig_descriptions[i] if i < len(orig_descriptions) else ''
+            f.write(f'>{rec.id} {desc}\n' if desc else f'>{rec.id}\n')
             seq = str(rec.seq)
-            for i in range(0, len(seq), 60):
-                f.write(seq[i:i + 60] + '\n')
+            for j in range(0, len(seq), 60):
+                f.write(seq[j:j + 60] + '\n')
     return len(records), backup
 
 
@@ -596,7 +619,15 @@ def check_assembly_compatibility(folder_structure_dir: str = None, skip_ignored:
         gbk_ids = GenBankFile(gbk_path).get_contig_ids()
         gbk_id_set = set(gbk_ids)
 
-        if set(FastaFile(fna_path).get_contig_ids()) == gbk_id_set:
+        fna_ids = FastaFile(fna_path).get_contig_ids()
+        fna_id_set = set(fna_ids)
+
+        if fna_id_set == gbk_id_set:
+            print(f'{genome_id}: OK')
+            ok += 1
+        elif ({_strip_gnl_prefix(i) for i in fna_id_set} == gbk_id_set
+              or {_strip_version_suffix(i) for i in gbk_id_set} == fna_id_set
+              or gbk_id_set == {_strip_version_suffix(i) for i in fna_id_set}):
             print(f'{genome_id}: OK')
             ok += 1
         else:

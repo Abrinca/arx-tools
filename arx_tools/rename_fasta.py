@@ -2,7 +2,7 @@ import os
 import re
 import logging
 
-from .utils import GenomeFile, split_locus_tag, contig_format_to_regex
+from .utils import GenomeFile, split_locus_tag, clean_locus_tag, contig_format_to_regex
 
 
 class FastaFile(GenomeFile):
@@ -40,11 +40,11 @@ class FastaFile(GenomeFile):
             for line in f_in:
                 if line.startswith('>'):
                     parts = line[1:].split(None, 1)
-                    old_tag = parts[0]
-                    if old_tag not in lt_map:
-                        raise ValueError(f'Locus tag {old_tag!r} not found in lt_map. {self.path=}')
+                    bare = clean_locus_tag(parts[0])  # strips gnl|X| prefix if present
+                    if bare not in lt_map:
+                        raise ValueError(f'Locus tag {parts[0]!r} not found in lt_map. {self.path=}')
                     suffix = (' ' + parts[1]) if len(parts) > 1 else '\n'
-                    f_out.write(f'>{lt_map[old_tag]}{suffix}')
+                    f_out.write(f'>{lt_map[bare]}{suffix}')
                 else:
                     f_out.write(line)
         if update_path:

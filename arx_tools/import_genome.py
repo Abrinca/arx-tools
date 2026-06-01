@@ -35,12 +35,12 @@ class ImportSettings:
         ],
         'file_finder': {
             'fna': {'glob': '*.fna', 'expected': False},
-            'gbk': {'glob': '*.gbk', 'expected': 1},
-            'gff': {'glob': '*.gff', 'expected': False},
+            'gbk': {'glob': ['*.gbk', '*.gbff'], 'expected': 1},
+            'gff': {'glob': ['*.gff', '*.gff3'], 'expected': False},
             'faa': {'glob': '*.faa', 'expected': False},
             'sqn': {'glob': '*.sqn', 'expected': False},
             'ffn': {'glob': '*.ffn', 'expected': False},
-            'eggnog': {'glob': '*.emapper.annotations', 'expected': False},
+            'eggnog': {'glob': ['*.emapper.annotations', '*.eggnog'], 'expected': False},
             'yaml': {'glob': '*.yaml', 'expected': False},
             'busco': {'glob': '*_busco.txt', 'expected': False},
             'custom_annotations': [
@@ -160,7 +160,10 @@ class ImportSettings:
         expected = settings.get('expected', False)
 
         with WorkingDirectory(root_dir):
-            files = glob(glob_pattern)
+            if isinstance(glob_pattern, list):
+                files = [f for pattern in glob_pattern for f in glob(pattern)]
+            else:
+                files = glob(glob_pattern)
 
         logging.info(f'Found {len(files)} files of type={type_} using glob={glob_pattern}')
         self.check_expected(files, expected, glob_pattern)
@@ -209,7 +212,7 @@ class ImportSettings:
 
 def autodetect_organism_genome(root_dir: str) -> (str, str):
     with WorkingDirectory(root_dir):
-        gbks = glob('*.gbk')
+        gbks = glob('*.gbk') + glob('*.gbff')
         last_error = None
         for gbk in gbks:
             try:

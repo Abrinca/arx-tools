@@ -301,20 +301,25 @@ class GenBankFile(GenomeFile):
                     if strain is not None and locus_tag is not None:
                         break
 
-        assert type(locus_tag) is list, f'Could not read genome from .gbk file! {locus_tag=}'
+        if locus_tag is None:
+            raise ValueError(
+                f'Could not read genome name from {self.path!r}: '
+                f'no /locus_tag= qualifier found in any feature.'
+            )
+
+        locus_tag_prefix, gene_id = split_locus_tag(locus_tag[0])
 
         if type(strain) is list and len(strain) == 1 and type(strain[0]) is str:
             strain = strain[0]
         else:
             strain = os.environ.get('STRAIN', None)
             if strain is None:
-                raise AssertionError(
-                    f'Could not read organism/strain from .gbk file {self.path!r}. '
-                    f'Set the STRAIN environment variable or specify --organism manually.'
+                strain = locus_tag_prefix.rstrip('_')
+                logging.info(
+                    f'No /strain= qualifier in {self.path!r}, '
+                    f'falling back to locus tag prefix as organism name: {strain!r}'
                 )
 
-        locus_tag_prefix, gene_id = split_locus_tag(locus_tag[0])
-        assert type(locus_tag_prefix) is str and type(strain) is str
         return strain, locus_tag_prefix
 
     @staticmethod

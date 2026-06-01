@@ -100,7 +100,15 @@ class EggnogFile(GenomeFile):
             if columns_header in head:
                 return type
 
-        raise KeyError(f'Could not discover eggnog type! {self.path=}')
+        expected = '\n'.join(
+            f'  {t}:\n    {h.strip()}'
+            for t, h in EGGNOG_VERSIONS.items()
+        )
+        raise ValueError(
+            f'Unrecognised eggNOG file format: {self.path!r}\n'
+            f'Expected one of these header lines:\n{expected}\n'
+            f'Got (first 5 lines):\n{head.strip()}'
+        )
 
     def validate_locus_tags(self, locus_tag_prefix: str = None):
         if locus_tag_prefix is None:

@@ -279,8 +279,8 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
     """
     Upgrade folder structure from v2 to v3.
 
-    Only contig IDs are updated; locus tags are left untouched (v2 genomes already have
-    clean locus tags from the original import).
+    Only contig IDs are updated; locus tags are left untouched (arx enforces correct locus tags
+    at import time, so all genomes in the folder structure already have the right prefix).
 
     Per genome:
       1. Shallow v3 check: skip if already v3; warn if a partial upgrade (.v3 files) exists.
@@ -405,8 +405,10 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             continue
 
         if _locus_tags_need_rename(gbk_path, genome_id):
-            print(f'{genome_id}: SKIP: locus tags use external IDs (not arx-renamed); '
-                  f'run arx --rename on this genome first, then re-run the upgrade')
+            detected = GenBankFile(gbk_path).detect_locus_tag_prefix()
+            print(f'{genome_id}: SKIP: locus tags use prefix {detected!r}, expected {genome_id!r}. '
+                  f'Fix manually with rename_genbank / rename_gff / rename_fasta / rename_eggnog '
+                  f'before re-running the upgrade.')
             skipped_needs_rename += 1
             continue
 
@@ -439,7 +441,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                                   f'(seqid format may not be supported; plain or gnl|X|id expected). '
                                   f'Check {os.path.basename(asm_path)} manually.')
 
-            # 2c. Rewrite GFF contig seqids (use genome.json path to handle .gff3 and other extensions).
+            # 2c. Rewrite GFF contig seqids.
             if not create_from_file and contig_map:
                 gff_filename = genome_json.get('cds_tool_gff_file')
                 gff_path = os.path.join(genome.path, gff_filename) if gff_filename else gbk_stem + '.gff'
@@ -447,11 +449,11 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                     gff_v3 = gff_path + '.v3'
                     v3_created.add(gff_v3)
                     seqid_changed = _apply_contig_map_to_gff(gff_path, gff_v3, contig_map)
-                    v3_to_orig[gff_v3] = gff_path
                     print(f'{genome_id}: created {os.path.basename(gff_v3)} ({seqid_changed} seqids updated)')
                     if seqid_changed == 0:
                         print(f'{genome_id}: WARNING: {os.path.basename(gff_path)}: no seqids matched '
                               f'(contig ID format in GFF may not be supported). Check manually.')
+                    v3_to_orig[gff_v3] = gff_path
 
 
         except Exception as e:
@@ -529,7 +531,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
     def _extra(counts):
         parts = []
         if counts.get('rename'):
-            parts.append(f'{counts["rename"]} need arx --rename')
+            parts.append(f'{counts["rename"]} skipped (wrong locus tag prefix; fix manually and re-run)')
         if counts.get('errors'):
             parts.append(f'{counts["errors"]} skipped (config/file errors)')
         return (', ' + ', '.join(parts)) if parts else ''

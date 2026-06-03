@@ -7,7 +7,7 @@ from . import __folder_structure_version__
 
 
 def download_go_data(out: str) -> None:
-    source_url = 'https://current.geneontology.org/ontology/go.obo'
+    source_url = 'http://purl.obolibrary.org/obo/go.obo'
 
     print(f'Converting {source_url} -> {out}')
 
@@ -37,7 +37,8 @@ def download_go_data(out: str) -> None:
         assert entry[7:14].isnumeric()
         return entry[4:14]
 
-    with request.urlopen(source_url) as source_handle, open(out, 'w') as target_handle:
+    req = request.Request(source_url, headers={'User-Agent': 'arx-tools/1.0 (gene ontology data download)'})
+    with request.urlopen(req) as source_handle, open(out, 'w') as target_handle:
         gos = go_generator(io=source_handle)
 
         # skip first entry

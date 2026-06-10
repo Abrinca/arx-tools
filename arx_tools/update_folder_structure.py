@@ -11,6 +11,7 @@ from .folder_looper import FolderLooper, FolderGenome
 from .rename_eggnog import EggnogFile
 from .rename_genbank import GenBankFile
 from .rename_fasta import FastaFile
+from .rename_gff import GffFile
 from .utils import query_yes_no, get_folder_structure_version
 
 
@@ -669,6 +670,92 @@ def check_assembly_compatibility(folder_structure_dir: str = None, skip_ignored:
     print(f'\nSummary: {ok} OK, {fixed} fixed, {incompatible} incompatible, {skipped} skipped')
 
 
+def _check_gff_compatibility_one(genome_id: str, genome_path: str, genome_json: dict) -> str | None:
+    """Check GFF/GBK compatibility for one genome. Returns an issue string or None if OK."""
+    gbk_filename = genome_json.get('cds_tool_gbk_file')
+    if not gbk_filename:
+        return 'SKIP: no cds_tool_gbk_file in genome.json'
+    gbk_path = os.path.join(genome_path, gbk_filename)
+    if not os.path.exists(gbk_path):
+        return f'SKIP: GBK not found: {gbk_path}'
+
+    gff_filename = genome_json.get('cds_tool_gff_file')
+    gbk_stem = os.path.splitext(gbk_path)[0]
+    gff_path = os.path.join(genome_path, gff_filename) if gff_filename else gbk_stem + '.gff'
+    if not os.path.exists(gff_path):
+        return f'SKIP: GFF not found: {gff_path}'
+
+    issues = []
+    gbk_file = GenBankFile(gbk_path)
+    gff_file = GffFile(gff_path)
+
+    gff_lt = None
+    try:
+        gbk_lt = gbk_file.detect_locus_tag_prefix()
+        gff_lt = gff_file.detect_locus_tag_prefix()
+        if gbk_lt != gff_lt:
+            issues.append(f'locus tag prefix mismatch: GBK={gbk_lt!r}, GFF={gff_lt!r}')
+    except (KeyError, ValueError) as e:
+        issues.append(f'could not read locus tag prefix: {e}')
+
+    # Scan column 9 for PREFIX_NNNNN values not matching the expected locus tag prefix.
+    # Catches stale accession-based IDs (e.g. protein_id=gnl|C|OLD_00001) in any format.
+    try:
+        if gff_lt is not None:
+            unexpected = gff_file.find_unexpected_id_prefixes(gff_lt)
+            if unexpected:
+                detail = ', '.join(f'{p!r} ({n}x)' for p, n in sorted(unexpected.items()))
+                issues.append(f'unexpected ID prefix(es) in GFF attributes: {detail}')
+    except Exception as e:
+        issues.append(f'could not scan GFF attribute prefixes: {e}')
+
+    try:
+        gbk_ids = set(gbk_file.get_contig_ids())
+        gff_ids = set(gff_file.get_seqids())
+        # Prokka GFFs use gnl|X|bare_id in seqids; strip for comparison
+        gff_bare = {s.rsplit('|', 1)[1] if '|' in s else s for s in gff_ids}
+        if gff_ids != gbk_ids and gff_bare != gbk_ids:
+            only_gbk = gbk_ids - gff_ids - gff_bare
+            only_gff = gff_ids - gbk_ids
+            issues.append(f'contig ID mismatch: {len(only_gbk)} only in GBK, {len(only_gff)} only in GFF')
+    except Exception as e:
+        issues.append(f'could not compare contig IDs: {e}')
+
+    return 'MISMATCH: ' + '; '.join(issues) if issues else None
+
+
+def check_gff_compatibility(folder_structure_dir: str = None, genome_dir: str = None,
+                            genome_id: str = None, skip_ignored: bool = False) -> None:
+    """
+    Check whether GBK and GFF contig IDs and locus tag prefixes match for each genome.
+
+    Pass --genome_dir to check a single genome instead of the whole folder structure.
+    genome_id defaults to the basename of genome_dir.
+    """
+    if genome_dir:
+        if genome_id is None:
+            genome_id = os.path.basename(genome_dir.rstrip('/'))
+        genome_json = json.load(open(os.path.join(genome_dir, 'genome.json')))
+        result = _check_gff_compatibility_one(genome_id, genome_dir, genome_json)
+        print(f'{genome_id}: {result or "OK"}')
+        return
+
+    folder_structure_dir = _get_folder_structure_dir(folder_structure_dir)
+    ok = incompatible = skipped = 0
+
+    for genome in loop_genomes(folder_structure_dir=folder_structure_dir, skip_ignored=skip_ignored):
+        result = _check_gff_compatibility_one(genome.identifier, genome.path, genome.json)
+        print(f'{genome.identifier}: {result or "OK"}')
+        if result is None:
+            ok += 1
+        elif result.startswith('SKIP'):
+            skipped += 1
+        else:
+            incompatible += 1
+
+    print(f'\nSummary: {ok} OK, {incompatible} incompatible, {skipped} skipped')
+
+
 def check_v3(folder_structure_dir: str = None, genome_dir: str = None, genome_id: str = None,
              deep: bool = False, contig_format: str = '_scf{n}'):
     """
@@ -706,6 +793,7 @@ def main():
         '2_to_3': from_2_to_3,
         'check_v3': check_v3,
         'check_assembly_compatibility': check_assembly_compatibility,
+        'check_gff_compatibility': check_gff_compatibility,
     })
 
 

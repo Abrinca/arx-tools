@@ -8,7 +8,6 @@ Four distinct annotation-tool output formats appear in the real data:
 
   Prokka (Abrinca / 20x84EH010_ID1695.003)
     Seqid:    gnl|C|LOCUS_NAME  (prefix stripped by _resolve_contig_id)
-    Locus ID: 5-digit arx tag + _gene/_tRNA suffix  (handled by _lookup_gene_tag)
 
   PGAP GCA / WGS (99.0676_GCA_012488935.1)
     Seqid:    AASQEV010000001.1  (NCBI WGS accession, direct match in contig_map)
@@ -36,8 +35,6 @@ import unittest
 
 from arx_tools.update_folder_structure import (
     _apply_contig_map_to_fna,
-    _apply_maps_to_gff,
-    _extend_gene_tag_map,
 )
 from arx_tools.check_v3 import check_genome_v3
 from arx_tools.rename_genbank import GenBankFile
@@ -112,8 +109,6 @@ class TestProkkaGnlContigRename(unittest.TestCase):
         self.contig_map, self.lt_map = GenBankFile(_PROKKA_GBK).normalize(
             out=out_gbk, genome_id=_PROKKA_GENOME_ID
         )
-        self.extended_lt_map = _extend_gene_tag_map(self.lt_map)
-
     def tearDown(self):
         self._tmp.cleanup()
 
@@ -141,61 +136,6 @@ class TestProkkaGnlContigRename(unittest.TestCase):
         # No gnl| prefix should remain in those lines
         self.assertFalse(any('gnl|' in l for l in lines),
                          f'gnl| prefix still present: {lines}')
-
-
-@unittest.skipUnless(os.path.exists(_PROKKA_GFF), 'Prokka GFF not available')
-class TestProkkaGffRename(unittest.TestCase):
-    """_apply_maps_to_gff handles Prokka-specific seqid and _gene-suffix IDs."""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = self._tmp.name
-        out_gbk = os.path.join(self.tmp, 'out.gbk')
-        self.contig_map, lt_map = GenBankFile(_PROKKA_GBK).normalize(
-            out=out_gbk, genome_id=_PROKKA_GENOME_ID
-        )
-        self.extended_lt_map = _extend_gene_tag_map(lt_map)
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def test_gff_seqid_gnl_prefix_renamed(self):
-        """After applying maps, no gnl|C| seqids remain in the first 20 feature lines."""
-        out_gff = os.path.join(self.tmp, 'out.gff')
-        _apply_maps_to_gff(_PROKKA_GFF, out_gff, self.contig_map, self.extended_lt_map)
-        feature_lines = []
-        with open(out_gff) as f:
-            for line in f:
-                if not line.startswith('#') and '\t' in line:
-                    feature_lines.append(line)
-                    if len(feature_lines) >= 20:
-                        break
-        self.assertGreater(len(feature_lines), 0, 'No feature lines found in renamed GFF')
-        for line in feature_lines:
-            seqid = line.split('\t', 1)[0]
-            self.assertNotIn('gnl|', seqid, f'gnl| still in seqid: {seqid!r}')
-
-    def test_gff_gene_suffix_id_renamed(self):
-        """ID=<locus_tag>_gene attributes are renamed to the v3 locus tag with _gene suffix."""
-        import re
-        out_gff = os.path.join(self.tmp, 'out.gff')
-        _apply_maps_to_gff(_PROKKA_GFF, out_gff, self.contig_map, self.extended_lt_map)
-        # The Prokka GFF has ~529 ##sequence-region lines before the first feature;
-        # collect the first 20 non-comment, tab-delimited lines.
-        feature_lines = []
-        with open(out_gff) as f:
-            for line in f:
-                if not line.startswith('#') and '\t' in line:
-                    feature_lines.append(line)
-                    if len(feature_lines) >= 20:
-                        break
-        content = ''.join(feature_lines)
-        old_5digit = re.compile(rf'ID={re.escape(_PROKKA_GENOME_ID)}_\d{{5}}_gene')
-        new_6digit = re.compile(rf'ID={re.escape(_PROKKA_GENOME_ID)}_\d{{6}}_gene')
-        self.assertFalse(old_5digit.search(content),
-                         'Old 5-digit _gene ID still present in renamed GFF')
-        self.assertTrue(new_6digit.search(content),
-                        'No new 6-digit _gene ID found in renamed GFF')
 
 
 # ── PGAP tests ─────────────────────────────────────────────────────────────────
@@ -226,52 +166,6 @@ class TestPgapContigRename(unittest.TestCase):
         v3_pattern = re.compile(rf'^{re.escape(_PGAP_GENOME_ID)}_\d{{6}}$')
         for new_lt in self.lt_map.values():
             self.assertRegex(new_lt, v3_pattern)
-
-
-@unittest.skipUnless(os.path.exists(_PGAP_GFF), 'PGAP GFF not available')
-class TestPgapGffRename(unittest.TestCase):
-    """_apply_maps_to_gff handles PGAP's gene-/cds- prefixed feature IDs."""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = self._tmp.name
-        out_gbk = os.path.join(self.tmp, 'out.gbk')
-        self.contig_map, lt_map = GenBankFile(_PGAP_GBK).normalize(
-            out=out_gbk, genome_id=_PGAP_GENOME_ID
-        )
-        self.lt_map = lt_map
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def test_gff_seqid_renamed(self):
-        """NCBI accession seqids are replaced with v3 contig IDs."""
-        out_gff = os.path.join(self.tmp, 'out.gff')
-        _apply_maps_to_gff(_PGAP_GFF, out_gff, self.contig_map, self.lt_map)
-        with open(out_gff) as f:
-            lines = [f.readline() for _ in range(50)]
-        feature_lines = [l for l in lines if l and not l.startswith('#') and '\t' in l]
-        for line in feature_lines[:20]:
-            seqid = line.split('\t', 1)[0]
-            self.assertTrue(
-                seqid.startswith(_PGAP_GENOME_ID),
-                f'seqid not renamed: {seqid!r}',
-            )
-
-    def test_gff_gene_prefix_ids_renamed(self):
-        """ID=gene-B4S48_XXXXXX attributes are renamed to ID=gene-<v3_locus_tag>."""
-        out_gff = os.path.join(self.tmp, 'out.gff')
-        _apply_maps_to_gff(_PGAP_GFF, out_gff, self.contig_map, self.lt_map)
-        with open(out_gff) as f:
-            content_head = f.read(8192)
-        # Old locus tags (B4S48_ prefix) should not appear in any ID= or Parent= attributes
-        import re
-        old_gene_id = re.compile(r'ID=gene-B4S48_')
-        new_gene_id = re.compile(rf'ID=gene-{re.escape(_PGAP_GENOME_ID)}_\d{{6}}')
-        self.assertFalse(old_gene_id.search(content_head),
-                         'Old gene- IDs still present after rename')
-        self.assertTrue(new_gene_id.search(content_head),
-                        'No new gene- IDs found after rename')
 
 
 # ── FAM1079 v3 check ───────────────────────────────────────────────────────────
@@ -341,61 +235,6 @@ class TestPgapNZContigRename(unittest.TestCase):
             self.assertRegex(new_lt, v3_pattern)
 
 
-@unittest.skipUnless(os.path.exists(_NZ_GFF), 'NZ_ RefSeq GFF not available')
-class TestPgapNZGffRename(unittest.TestCase):
-    """NZ_ seqids and RS-style locus tag IDs are fully renamed."""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = self._tmp.name
-        out_gbk = os.path.join(self.tmp, 'out.gbk')
-        self.contig_map, self.lt_map = GenBankFile(_NZ_GBK).normalize(
-            out=out_gbk, genome_id=_NZ_GENOME_ID
-        )
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def test_nz_seqid_renamed(self):
-        """NZ_ seqids are replaced with v3 contig IDs."""
-        out_gff = os.path.join(self.tmp, 'out.gff')
-        _apply_maps_to_gff(_NZ_GFF, out_gff, self.contig_map, self.lt_map)
-        feature_lines = []
-        with open(out_gff) as f:
-            for line in f:
-                if not line.startswith('#') and '\t' in line:
-                    feature_lines.append(line)
-                    if len(feature_lines) >= 10:
-                        break
-        self.assertGreater(len(feature_lines), 0)
-        for line in feature_lines:
-            seqid = line.split('\t', 1)[0]
-            self.assertFalse(seqid.startswith('NZ_'),
-                             f'NZ_ seqid not renamed: {seqid!r}')
-            self.assertTrue(seqid.startswith(_NZ_GENOME_ID),
-                            f'Unexpected seqid: {seqid!r}')
-
-    def test_rs_style_gene_ids_renamed(self):
-        """ID=gene-AS963_RS##### attributes are renamed to gene-<v3_locus_tag>."""
-        import re
-        out_gff = os.path.join(self.tmp, 'out.gff')
-        _apply_maps_to_gff(_NZ_GFF, out_gff, self.contig_map, self.lt_map)
-        feature_lines = []
-        with open(out_gff) as f:
-            for line in f:
-                if not line.startswith('#') and '\t' in line:
-                    feature_lines.append(line)
-                    if len(feature_lines) >= 50:
-                        break
-        content = ''.join(feature_lines)
-        old_rs_id = re.compile(r'ID=gene-AS963_RS\d+')
-        new_gene_id = re.compile(rf'ID=gene-{re.escape(_NZ_GENOME_ID)}_\d{{6}}')
-        self.assertFalse(old_rs_id.search(content),
-                         'Old RS-style gene IDs still present after rename')
-        self.assertTrue(new_gene_id.search(content),
-                        'No new v3 gene IDs found after rename')
-
-
 # ── arx in-house FAM* (identity lt_map, only contig rename) ───────────────────
 
 @unittest.skipUnless(os.path.exists(_FAM20446_GBK), 'FAM20446 genome not available')
@@ -428,62 +267,6 @@ class TestFamInHouseContigRename(unittest.TestCase):
         for old, new in self.contig_map.items():
             self.assertIn('scf0', old, f'Expected old 4-digit scf key: {old}')
             self.assertRegex(new, rf'^{re.escape(_FAM20446_GENOME_ID)}_scf\d+$')
-
-
-@unittest.skipUnless(os.path.exists(_FAM20446_GFF), 'FAM20446 GFF not available')
-class TestFamInHouseGffRename(unittest.TestCase):
-    """In-house FAM* GFFs: seqid renamed, locus tag IDs left unchanged (identity)."""
-
-    def setUp(self):
-        import re as _re
-        self._re = _re
-        self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = self._tmp.name
-        out_gbk = os.path.join(self.tmp, 'out.gbk')
-        self.contig_map, self.lt_map = GenBankFile(_FAM20446_GBK).normalize(
-            out=out_gbk, genome_id=_FAM20446_GENOME_ID
-        )
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def test_old_scf0_seqids_renamed(self):
-        """FAM..._scf0001 seqids are replaced with FAM..._scf1 v3 IDs."""
-        out_gff = os.path.join(self.tmp, 'out.gff')
-        _apply_maps_to_gff(_FAM20446_GFF, out_gff, self.contig_map, self.lt_map)
-        feature_lines = []
-        with open(out_gff) as f:
-            for line in f:
-                if not line.startswith('#') and '\t' in line:
-                    feature_lines.append(line)
-                    if len(feature_lines) >= 20:
-                        break
-        self.assertGreater(len(feature_lines), 0)
-        for line in feature_lines:
-            seqid = line.split('\t', 1)[0]
-            self.assertNotIn('scf0', seqid,
-                             f'Old scf0NNN seqid not renamed: {seqid!r}')
-
-    def test_gene_ids_carry_correct_locus_tag(self):
-        """
-        gene- feature IDs keep the 6-digit locus tag (unchanged by identity map).
-        The seqid changes but ID=gene-FAM20446-i1-1.1_000001 stays the same.
-        """
-        out_gff = os.path.join(self.tmp, 'out.gff')
-        _apply_maps_to_gff(_FAM20446_GFF, out_gff, self.contig_map, self.lt_map)
-        feature_lines = []
-        with open(out_gff) as f:
-            for line in f:
-                if not line.startswith('#') and '\t' in line:
-                    feature_lines.append(line)
-                    if len(feature_lines) >= 20:
-                        break
-        content = ''.join(feature_lines)
-        expected = self._re.compile(
-            rf'ID=gene-{self._re.escape(_FAM20446_GENOME_ID)}_\d{{6}}'
-        )
-        self.assertTrue(expected.search(content),
-                        'Expected gene- IDs with 6-digit locus tags in renamed GFF')
 
 
 # ── Bakta (plain contig IDs, bare locus tag feature IDs) ──────────────────────
@@ -542,57 +325,3 @@ class TestBaktaFnaRename(unittest.TestCase):
         self.assertNotIn('contig_', first_header)
 
 
-@unittest.skipUnless(os.path.exists(_BAKTA_GFF), 'Bakta GFF not available')
-class TestBaktaGffRename(unittest.TestCase):
-    """_apply_maps_to_gff handles Bakta's plain seqids and bare locus tag IDs."""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = self._tmp.name
-        out_gbk = os.path.join(self.tmp, 'out.gbk')
-        self.contig_map, lt_map = GenBankFile(_BAKTA_GBK).normalize(
-            out=out_gbk, genome_id=_BAKTA_GENOME_ID
-        )
-        self.extended_lt_map = _extend_gene_tag_map(lt_map)
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def test_gff_seqid_renamed(self):
-        """contig_1 seqids are replaced with thomas-1.1_scf1."""
-        out_gff = os.path.join(self.tmp, 'out.gff')
-        sc, _ = _apply_maps_to_gff(_BAKTA_GFF, out_gff, self.contig_map, self.extended_lt_map)
-        self.assertGreater(sc, 0, 'Expected at least one seqid to be renamed')
-        feature_lines = []
-        with open(out_gff) as f:
-            for line in f:
-                if not line.startswith('#') and '\t' in line:
-                    feature_lines.append(line)
-                    if len(feature_lines) >= 20:
-                        break
-        for line in feature_lines:
-            seqid = line.split('\t', 1)[0]
-            self.assertFalse(seqid.startswith('contig_'),
-                             f'Plain contig_ seqid not renamed: {seqid!r}')
-            self.assertTrue(seqid.startswith(_BAKTA_GENOME_ID),
-                            f'Unexpected seqid: {seqid!r}')
-
-    def test_gff_bare_locus_tag_ids_renamed(self):
-        """ID=thomas-1.1_00005 (bare locus tag) is renamed to 6-digit ID via direct lookup."""
-        out_gff = os.path.join(self.tmp, 'out.gff')
-        _, ar = _apply_maps_to_gff(_BAKTA_GFF, out_gff, self.contig_map, self.extended_lt_map)
-        self.assertGreater(ar, 0, 'Expected at least one ID= attribute to be renamed')
-        feature_lines = []
-        with open(out_gff) as f:
-            for line in f:
-                if not line.startswith('#') and '\t' in line:
-                    feature_lines.append(line)
-                    if len(feature_lines) >= 20:
-                        break
-        content = ''.join(feature_lines)
-        old_5digit = re.compile(rf'ID={re.escape(_BAKTA_GENOME_ID)}_\d{{5}}[^0-9]')
-        new_6digit = re.compile(rf'ID={re.escape(_BAKTA_GENOME_ID)}_\d{{6}}')
-        self.assertFalse(old_5digit.search(content),
-                         'Old 5-digit locus tag ID still present after rename')
-        self.assertTrue(new_6digit.search(content),
-                        'No new 6-digit locus tag ID found after rename')

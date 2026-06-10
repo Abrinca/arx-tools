@@ -1,6 +1,10 @@
 import os
+import re
 
 from .utils import GenomeFile, create_replace_function, split_locus_tag
+
+_ID_PREFIX_RE = re.compile(r'([A-Za-z0-9][A-Za-z0-9._-]{3,}_)(\d{5,})')
+_STRUCTURAL_PREFIXES = ('cds-', 'gene-', 'rna-', 'exon-', 'id-')
 
 
 class NoLocusTagInGffLine(KeyError):
@@ -23,7 +27,7 @@ class GffFile(GenomeFile):
 
         replace_fn = create_replace_function({
             string.format(prefix=old_locus_tag_prefix): string.format(prefix=new_locus_tag_prefix)
-            for string in ['-{prefix}', '={prefix}', ':{prefix}']
+            for string in ['-{prefix}', '={prefix}', ':{prefix}', '|{prefix}']
         })
 
         old_hash = hash(content)
@@ -97,6 +101,46 @@ class GffFile(GenomeFile):
                 f_out.write('\t'.join(cols))
         if update_path:
             self.path = out
+
+    def get_seqids(self) -> list[str]:
+        seen = []
+        seen_set = set()
+        with open(self.path) as f:
+            for line in f:
+                if line == '##FASTA\n':
+                    break
+                if line.startswith('#') or not line.strip():
+                    continue
+                seqid = line.split('\t', 1)[0]
+                if seqid not in seen_set:
+                    seen.append(seqid)
+                    seen_set.add(seqid)
+        return seen
+
+    def find_unexpected_id_prefixes(self, expected_prefix: str) -> dict[str, int]:
+        """Scan every feature line for PREFIX_NNNNN patterns where PREFIX != expected_prefix.
+
+        Searches the whole line rather than just column 9, so it handles GFF2/GTF formats
+        (where attributes use 'gene_id "VALUE"' instead of key=value) as well as GFF3.
+        Returns {unexpected_prefix: occurrence_count}.
+        """
+        counts: dict[str, int] = {}
+        with open(self.path) as f:
+            for line in f:
+                if line == '##FASTA\n':
+                    break
+                if line.startswith('#') or not line.strip():
+                    continue
+                for m in _ID_PREFIX_RE.finditer(line):
+                    prefix = m.group(1)
+                    # Strip structural GFF3 wrappers (cds-, gene-, rna-, ...) before comparing
+                    for sp in _STRUCTURAL_PREFIXES:
+                        if prefix.startswith(sp):
+                            prefix = prefix[len(sp):]
+                            break
+                    if prefix != expected_prefix:
+                        counts[prefix] = counts.get(prefix, 0) + 1
+        return counts
 
     def detect_locus_tag_prefix(self) -> str:
         with open(self.path) as f:

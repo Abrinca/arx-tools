@@ -1,7 +1,7 @@
 /.idea/
 /test-data
 /database
-/folder_structure
+/folder_structure*
 __pycache__
 esummary_assembly.dtd
 /esummary_biosample.dtd
@@ -12,3 +12,8 @@ esummary_assembly.dtd
 /arx_tools.egg-info/
 .vscode
 .venv*
+/bin
+/lib
+/lib64
+/include
+/pyvenv.cfg

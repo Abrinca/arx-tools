@@ -10,7 +10,8 @@ def reindex_assembly(file: str, out: str, prefix: str, leading_zeroes: int = Non
     :param prefix: desired prefix
     :param leading_zeroes: format counter with leading zeroes (optional). e.g.: 5 -> >PREFIX_00001
     """
-    assert not os.path.isfile(out), f'Output file already exists! {out=}'
+    if os.path.isfile(out):
+        raise SystemExit(f'Error: output file already exists: {out}')
 
     if type(leading_zeroes) is int and leading_zeroes > 1:
         format = lambda c: f'>{prefix}{str(c).zfill(leading_zeroes)}\n'

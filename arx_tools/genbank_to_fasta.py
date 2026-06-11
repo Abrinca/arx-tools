@@ -16,8 +16,10 @@ class GenBankToFasta:
         :param out: path to output file
         :param format: faa for protein FASTA, ffn for nucleotide FASTA
         """
-        assert not os.path.isfile(out), f'Output file already exists! {out=}'
-        assert format in ('faa', 'ffn'), f'Format must be either faa or ffn! {format=}'
+        if os.path.isfile(out):
+            raise SystemExit(f'Error: output file already exists: {out}')
+        if format not in ('faa', 'ffn'):
+            raise SystemExit(f'Error: format must be faa or ffn, got: {format!r}')
 
         with open(out, 'w') as f:
             for line in cls._short_fasta_generator(gbk=gbk, format=format, strict=strict):

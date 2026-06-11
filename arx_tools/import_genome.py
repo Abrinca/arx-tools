@@ -401,23 +401,29 @@ def import_genome(
     import_dir = os.path.abspath(import_dir)
 
     if folder_structure_dir is None:
-        assert 'FOLDER_STRUCTURE' in os.environ, \
-            f'Cannot find the folder_structure. ' \
-            f'Please set --folder_structure_dir or environment variable FOLDER_STRUCTURE'
+        if 'FOLDER_STRUCTURE' not in os.environ:
+            raise SystemExit(
+                'Error: folder_structure_dir is not set.\n'
+                'Use --folder_structure_dir=<path> or set the FOLDER_STRUCTURE environment variable.'
+            )
         folder_structure_dir = os.environ['FOLDER_STRUCTURE']
 
     folder_structure_dir = os.path.abspath(folder_structure_dir)
 
     organisms_dir = f'{folder_structure_dir}/organisms'
-    assert os.path.isdir(organisms_dir), f'Cannot import files: {organisms_dir=} does not exist.'
+    if not os.path.isdir(organisms_dir):
+        raise SystemExit(f'Error: organisms directory does not exist: {organisms_dir}')
 
     current_folder_structure_version = get_folder_structure_version(folder_structure_dir)
-    assert current_folder_structure_version == __folder_structure_version__, \
-        f'Before importing any genomes, the folder structure needs to be updated to match OpenGenomeBrowser Tools.\n' \
-        f'Current version: {current_folder_structure_version}, expected: {__folder_structure_version__}\n' \
-        f'Use the script update_folder_structure perform the upgrade!'
+    if current_folder_structure_version != __folder_structure_version__:
+        raise SystemExit(
+            f'Error: folder structure version mismatch.\n'
+            f'Current version: {current_folder_structure_version}, expected: {__folder_structure_version__}\n'
+            f'Run update_folder_structure to upgrade.'
+        )
 
-    assert os.path.isdir(import_dir), f'Cannot import files: {import_dir=} does not exist.'
+    if not os.path.isdir(import_dir):
+        raise SystemExit(f'Error: import directory does not exist: {import_dir}')
 
     import_settings = ImportSettings(import_settings)
 
@@ -433,7 +439,8 @@ def import_genome(
 
     organism_dir = os.path.join(organisms_dir, organism)
     genome_dir = os.path.join(organism_dir, 'genomes', genome)
-    assert not os.path.exists(genome_dir), f'Could not import {organism}:{genome}: {genome_dir=} already exists!'
+    if os.path.exists(genome_dir):
+        raise SystemExit(f'Error: genome {organism}:{genome} is already imported: {genome_dir}')
 
     with tempfile.TemporaryDirectory() as work_dir:
         import_settings.execute_actions(import_dir, work_dir, genome, organism)

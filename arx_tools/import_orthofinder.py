@@ -153,7 +153,11 @@ def import_orthofinder(
     :param which: either 'hog' for N0.tsv or 'og' for 'Orthogroups.tsv
     """
     if folder_structure_dir is None:
-        assert 'FOLDER_STRUCTURE' in os.environ, f'Cannot find the folder_structure. Please set --folder_structure_dir or environment variable FOLDER_STRUCTURE'
+        if 'FOLDER_STRUCTURE' not in os.environ:
+            raise SystemExit(
+                'Error: folder_structure_dir is not set.\n'
+                'Use --folder_structure_dir=<path> or set the FOLDER_STRUCTURE environment variable.'
+            )
         folder_structure_dir = os.environ['FOLDER_STRUCTURE']
 
     if fasta_dir is None:
@@ -165,15 +169,17 @@ def import_orthofinder(
     if out_annotations is None:
         out_annotations = f'{folder_structure_dir}/orthologs/orthologs.tsv'  # is CustomAnnotationsFile, maps HOG -> [gene]
 
-    assert os.path.isdir(fasta_dir), f'Error: directory does not exist: {fasta_dir=}'
-    assert os.path.isdir(
-        f'{fasta_dir}/OrthoFinder'), f'Error: {fasta_dir=} contains no OrthoFinder directory. You must run OrthoFinder first!'
+    if not os.path.isdir(fasta_dir):
+        raise SystemExit(f'Error: directory does not exist: {fasta_dir}')
+    if not os.path.isdir(f'{fasta_dir}/OrthoFinder'):
+        raise SystemExit(f'Error: no OrthoFinder directory found in {fasta_dir}. Run OrthoFinder first.')
     for file in (out_descriptions, out_annotations):
-        assert not os.path.isfile(file), f'Output file already exists! {file=}'
+        if os.path.isfile(file):
+            raise SystemExit(f'Error: output file already exists: {file}')
 
     results_dir = os.listdir(f'{fasta_dir}/OrthoFinder')
-    assert len(
-        results_dir) == 1, f'Error: {fasta_dir}/OrthoFinder must contain exactly one directory! dirs={results_dir}'
+    if len(results_dir) != 1:
+        raise SystemExit(f'Error: {fasta_dir}/OrthoFinder must contain exactly one results directory, found: {results_dir}')
     results_dir = results_dir[0]
 
     og_tsv = f'{fasta_dir}/OrthoFinder/{results_dir}/Orthogroups/Orthogroups.tsv'
@@ -182,13 +188,15 @@ def import_orthofinder(
     otg = OrthogroupToGeneName(fasta_dir, file_endings='faa')
 
     if which == 'hog':
-        assert os.path.isfile(hog_tsv), f'Could not find {hog_tsv=}'
+        if not os.path.isfile(hog_tsv):
+            raise SystemExit(f'Error: could not find {hog_tsv}')
         otg.load_hog(n0_tsv=hog_tsv)
     elif which == 'og':
-        assert os.path.isfile(og_tsv), f'Could not find {og_tsv=}'
+        if not os.path.isfile(og_tsv):
+            raise SystemExit(f'Error: could not find {og_tsv}')
         otg.load_og(og_tsv=og_tsv)
     else:
-        raise AssertionError(f"which must be 'og' or 'hog'")
+        raise SystemExit(f"Error: 'which' must be 'og' or 'hog', got: {which!r}")
 
     otg.save_orthogroup_to_gene_ids(out_annotations)
     otg.save_orthogroup_to_best_name(out_descriptions)

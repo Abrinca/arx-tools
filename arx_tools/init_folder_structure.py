@@ -111,14 +111,18 @@ def init_folder_structure(folder_structure_dir: str = None) -> None:
     :param folder_structure_dir: Path to the root of the OpenGenomeBrowser folder structure. (Will contain 'organisms' folder.)
     """
     if folder_structure_dir is None:
-        assert 'FOLDER_STRUCTURE' in os.environ, \
-            f'Cannot find the folder_structure. ' \
-            f'Please set --folder_structure_dir or environment variable FOLDER_STRUCTURE'
+        if 'FOLDER_STRUCTURE' not in os.environ:
+            raise SystemExit(
+                'Error: folder_structure_dir is not set.\n'
+                'Use --folder_structure_dir=<path> or set the FOLDER_STRUCTURE environment variable.'
+            )
         folder_structure_dir = os.environ['FOLDER_STRUCTURE']
 
-    assert os.path.isdir(
-        os.path.dirname(folder_structure_dir)), f'Parent dir of {folder_structure_dir=} does not exist!'
-    assert not os.path.exists(folder_structure_dir), f'Error: {folder_structure_dir=} already exist!'
+    parent_dir = os.path.dirname(os.path.abspath(folder_structure_dir))
+    if not os.path.isdir(parent_dir):
+        raise SystemExit(f'Error: parent directory does not exist: {parent_dir}')
+    if os.path.exists(folder_structure_dir):
+        raise SystemExit(f'Error: output directory already exists: {folder_structure_dir}')
 
     # make main dir
     os.makedirs(folder_structure_dir)

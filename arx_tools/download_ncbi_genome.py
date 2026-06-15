@@ -142,7 +142,8 @@ def download_ncbi_genome(
         os.makedirs(out_dir, exist_ok=True)
 
     for file in (out_fna, out_gbk, out_gff, out_ffn, out_faa):
-        assert not os.path.isfile(file), f'Output file already exists! {file=}'
+        if os.path.isfile(file):
+            raise SystemExit(f'Error: output file already exists: {file}')
 
     with TemporaryDirectory() as tempdir:
         raw_fna, raw_gbk, raw_gff = download_ncbi_fna_gbk_gff(assembly_name=assembly_name, out_dir=tempdir)

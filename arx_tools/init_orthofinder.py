@@ -4,7 +4,11 @@ from .folder_looper import FolderLooper
 
 def init_orthofinder(folder_structure_dir: str = None, skip_ignored: bool = True, sanity_check: bool = True, representatives_only: bool = False):
     if folder_structure_dir is None:
-        assert 'FOLDER_STRUCTURE' in os.environ, f'Cannot find the folder_structure. Please set --folder_structure_dir or environment variable FOLDER_STRUCTURE'
+        if 'FOLDER_STRUCTURE' not in os.environ:
+            raise SystemExit(
+                'Error: folder_structure_dir is not set.\n'
+                'Use --folder_structure_dir=<path> or set the FOLDER_STRUCTURE environment variable.'
+            )
         folder_structure_dir = os.environ['FOLDER_STRUCTURE']
 
     orthofinder_dir = os.path.join(folder_structure_dir, 'OrthoFinder')
@@ -13,7 +17,8 @@ def init_orthofinder(folder_structure_dir: str = None, skip_ignored: bool = True
     if not os.path.isdir(orthofinder_dir):
         os.makedirs(orthofinder_dir)
 
-    assert len(os.listdir(orthofinder_dir)) == 0, f'Error: {orthofinder_dir=} is not empty!'
+    if len(os.listdir(orthofinder_dir)) != 0:
+        raise SystemExit(f'Error: OrthoFinder directory is not empty: {orthofinder_dir}')
 
     os.makedirs(fasta_dir)
 

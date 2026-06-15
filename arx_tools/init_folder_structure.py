@@ -72,8 +72,8 @@ def download_sl_data(out: str) -> None:
 
     try:
         source_handle = request.urlopen(source_url)
-    except Exception:
-        raise AssertionError(f'Failed to download {source_url}.\n{error_msg}')
+    except Exception as e:
+        raise AssertionError(f'Failed to download {source_url}: {e}') from e
 
     with open(out, 'w') as target_handle:
         first_line = source_handle.readline().decode('utf-8')
@@ -111,13 +111,18 @@ def init_folder_structure(folder_structure_dir: str = None) -> None:
     :param folder_structure_dir: Path to the root of the OpenGenomeBrowser folder structure. (Will contain 'organisms' folder.)
     """
     if folder_structure_dir is None:
-        assert 'FOLDER_STRUCTURE' in os.environ, \
-            f'Cannot find the folder_structure. ' \
-            f'Please set --folder_structure_dir or environment variable FOLDER_STRUCTURE'
+        if 'FOLDER_STRUCTURE' not in os.environ:
+            raise SystemExit(
+                'Error: folder_structure_dir is not set.\n'
+                'Use --folder_structure_dir=<path> or set the FOLDER_STRUCTURE environment variable.'
+            )
         folder_structure_dir = os.environ['FOLDER_STRUCTURE']
 
-    assert os.path.isdir(
-        os.path.dirname(folder_structure_dir)), f'Parent dir of {folder_structure_dir=} does not exist!'
+    parent_dir = os.path.dirname(os.path.abspath(folder_structure_dir))
+    if not os.path.isdir(parent_dir):
+        raise SystemExit(f'Error: parent directory does not exist: {parent_dir}')
+    if os.path.exists(folder_structure_dir):
+        raise SystemExit(f'Error: output directory already exists: {folder_structure_dir}')
 
     # make main dir
     os.makedirs(folder_structure_dir, exist_ok=True)
@@ -148,17 +153,41 @@ def init_folder_structure(folder_structure_dir: str = None) -> None:
 
     # download annotation descriptions (skip files that already exist)
     annotation_descriptions_dir = f'{folder_structure_dir}/annotation-descriptions'
-    os.makedirs(annotation_descriptions_dir, exist_ok=True)
-    if not os.path.exists(f'{annotation_descriptions_dir}/SL.tsv'):
-        download_sl_data(out=f'{annotation_descriptions_dir}/SL.tsv')
-    if not os.path.exists(f'{annotation_descriptions_dir}/KR.tsv'):
-        download_kegg_data(src='rn', out=f'{annotation_descriptions_dir}/KR.tsv', remove_prefix='rn:')
-    if not os.path.exists(f'{annotation_descriptions_dir}/KG.tsv'):
-        download_kegg_data(src='ko', out=f'{annotation_descriptions_dir}/KG.tsv', remove_prefix='ko:')
-    if not os.path.exists(f'{annotation_descriptions_dir}/EC.tsv'):
-        download_kegg_data(src='enzyme', out=f'{annotation_descriptions_dir}/EC.tsv', remove_prefix='ec:', add_prefix='EC:')
-    if not os.path.exists(f'{annotation_descriptions_dir}/GO.tsv'):
-        download_go_data(out=f'{annotation_descriptions_dir}/GO.tsv')
+    os.makedirs(annotation_descriptions_dir)
+
+    def try_download(fn, out: str, source_url: str) -> bool:
+        try:
+            fn(out=out)
+            return True
+        except Exception as e:
+            if os.path.exists(out):
+                os.remove(out)
+            print(f'WARNING: Could not download {os.path.basename(out)}: {e}')
+            print(f'  Download it manually from: {source_url}')
+            print(f'  and place it at: {out}')
+            return False
+
+    d = annotation_descriptions_dir
+    failed = []
+    if not try_download(download_sl_data, f'{d}/SL.tsv',
+                        'https://rest.uniprot.org/locations/stream?compressed=false&fields=id,name,definition&format=tsv&query=*'):
+        failed.append('SL.tsv')
+    if not try_download(lambda out: download_kegg_data(src='rn', out=out, remove_prefix='rn:'), f'{d}/KR.tsv',
+                        'http://rest.kegg.jp/list/rn'):
+        failed.append('KR.tsv')
+    if not try_download(lambda out: download_kegg_data(src='ko', out=out, remove_prefix='ko:'), f'{d}/KG.tsv',
+                        'http://rest.kegg.jp/list/ko'):
+        failed.append('KG.tsv')
+    if not try_download(lambda out: download_kegg_data(src='enzyme', out=out, remove_prefix='ec:', add_prefix='EC:'), f'{d}/EC.tsv',
+                        'http://rest.kegg.jp/list/enzyme'):
+        failed.append('EC.tsv')
+    if not try_download(download_go_data, f'{d}/GO.tsv',
+                        'http://purl.obolibrary.org/obo/go.obo'):
+        failed.append('GO.tsv')
+
+    if failed:
+        print(f'\nWARNING: {len(failed)} annotation description file(s) could not be downloaded: {", ".join(failed)}')
+        print('  arx will work but annotations may not display correctly for those types.')
 
 
 def main():

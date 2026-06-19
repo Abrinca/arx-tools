@@ -542,8 +542,8 @@ def import_genome(
             gbk.create_fna(fna=fna_path)
             fna = FastaFile(fna_path)
 
-        logging.info('Generating .gff.arx from .gbk.')
-        gff_path = os.path.join(work_dir, base + '.gff.arx')
+        logging.info('Generating .arx.gff from .gbk.')
+        gff_path = os.path.join(work_dir, base + '.arx.gff')
         gbk.create_gff(gff=gff_path)
         gff = GffFile(gff_path)
 

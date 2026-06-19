@@ -250,14 +250,14 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         actions = [
             'shallow-check each genome; skip if already v3',
             'generate .v3 for gbk and assembly fna (contig IDs only)',
-            '(gff.arx will be generated from updated GBK on --promote)',
+            '(.arx.gff will be generated from updated GBK on --promote)',
             '(promotion skipped; re-run with --promote to archive originals and promote)',
         ]
     elif promote:
         actions = [
             'shallow-check each genome; skip if already v3 or no pending .v3 files',
             'archive originals into {genome_id}_v2_backup.tar.gz and promote pending .v3 files',
-            'generate .gff.arx from promoted GBK; update genome.json',
+            'generate .arx.gff from promoted GBK; update genome.json',
             'post-check each genome to verify',
             'delete BLAST databases (rebuild manually in arx when needed)',
         ]
@@ -266,7 +266,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             'shallow-check each genome; skip if already v3',
             'generate .v3 for gbk and assembly fna (contig IDs only)',
             'archive originals and regenerate faa/ffn from updated GBK',
-            'generate .gff.arx from updated GBK; update genome.json',
+            'generate .arx.gff from updated GBK; update genome.json',
             'post-check each genome to verify',
             'delete BLAST databases (rebuild manually in arx when needed)',
         ]
@@ -275,7 +275,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             'shallow-check each genome; skip if already v3',
             'generate .v3 for gbk and assembly fna (contig IDs only)',
             'archive originals into {genome_id}_v2_backup.tar.gz and promote .v3 files',
-            'generate .gff.arx from promoted GBK; update genome.json',
+            'generate .arx.gff from promoted GBK; update genome.json',
             'post-check each genome to verify',
             'delete BLAST databases (rebuild manually in arx when needed)',
         ]
@@ -331,7 +331,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
 
             if gbk_filename:
                 gbk_path_p = os.path.join(genome.path, gbk_filename)
-                gff_arx = os.path.splitext(gbk_path_p)[0] + '.gff.arx'
+                gff_arx = os.path.splitext(gbk_path_p)[0] + '.arx.gff'
                 GenBankFile(gbk_path_p).create_gff(gff_arx)
                 print(f'{genome_id}: generated {os.path.basename(gff_arx)}')
                 genome_json['cds_tool_gff_file'] = os.path.basename(gff_arx)
@@ -456,8 +456,8 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                     os.remove(out)
                 create_fn(out)
 
-        # 3c. Generate .gff.arx from promoted GBK; original .gff is left on disk.
-        gff_arx = gbk_stem + '.gff.arx'
+        # 3c. Generate .arx.gff from promoted GBK; original .gff is left on disk.
+        gff_arx = gbk_stem + '.arx.gff'
         GenBankFile(gbk_path).create_gff(gff_arx)
         print(f'{genome_id}: generated {os.path.basename(gff_arx)}')
         genome_json['cds_tool_gff_file'] = os.path.basename(gff_arx)

@@ -6,12 +6,11 @@ import shutil
 import tarfile
 import warnings
 
-from .check_v3 import check_genome_v3
+from .check_v3 import check_genome_v3, seq_file_has_non_v3_locus_tags
 from .folder_looper import FolderLooper, FolderGenome
 from .rename_eggnog import EggnogFile
 from .rename_genbank import GenBankFile
 from .rename_fasta import FastaFile
-from .rename_gff import GffFile
 from .utils import query_yes_no, get_folder_structure_version
 
 
@@ -140,62 +139,6 @@ def _apply_contig_map_to_fna(src: str, dst: str, contig_map: dict) -> int:
     return renamed
 
 
-def _rename_sequence_region(line: str, contig_map: dict) -> str:
-    """Rename the seqid in a ##sequence-region pragma line."""
-    parts = line.split(None, 3)
-    if len(parts) != 4:
-        return line
-    new_contig = _resolve_contig_id(parts[1], contig_map)
-    if new_contig is None:
-        return line
-    parts[1] = new_contig
-    line = ' '.join(parts)
-    if not line.endswith('\n'):
-        line += '\n'
-    return line
-
-
-def _rename_gff_feature_line(line: str, contig_map: dict) -> tuple[str, int]:
-    """Rename seqid in a GFF3 feature line; return (line, seqid_changed)."""
-    cols = line.split('\t')
-    if len(cols) != 9:
-        return line, 0
-    new_contig = _resolve_contig_id(cols[0], contig_map)
-    if new_contig is None:
-        return line, 0
-    cols[0] = new_contig
-    return '\t'.join(cols), 1
-
-
-def _apply_contig_map_to_gff(src: str, dst: str, contig_map: dict) -> int:
-    """Write a contig-seqid-renamed copy of a GFF file to dst. Returns seqid_changed count."""
-    with open(src) as f:
-        lines = f.readlines()
-
-    seqid_changed = 0
-    in_fasta = False
-    result = []
-    for line in lines:
-        if in_fasta:
-            if line.startswith('>'):
-                parts = line[1:].split(None, 1)
-                new_id = _resolve_contig_id(parts[0], contig_map)
-                if new_id is not None:
-                    rest = (' ' + parts[1]) if len(parts) > 1 else '\n'
-                    line = f'>{new_id}{rest}'
-        elif line.strip() == '##FASTA':
-            in_fasta = True
-        elif line.startswith('##sequence-region'):
-            line = _rename_sequence_region(line, contig_map)
-        elif not line.startswith('#') and line.strip():
-            line, sc = _rename_gff_feature_line(line, contig_map)
-            seqid_changed += sc
-        result.append(line)
-
-    with open(dst, 'w') as f:
-        f.writelines(result)
-    return seqid_changed
-
 
 def _strip_gnl_prefix(contig_id: str) -> str:
     """Strip gnl|X| or similar pipe-delimited prefix, returning the bare ID."""
@@ -306,13 +249,15 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
     if create_only:
         actions = [
             'shallow-check each genome; skip if already v3',
-            'generate .v3 for gbk, assembly fna, and gff (contig IDs only)',
+            'generate .v3 for gbk and assembly fna (contig IDs only)',
+            '(gff.arx will be generated from updated GBK on --promote)',
             '(promotion skipped; re-run with --promote to archive originals and promote)',
         ]
     elif promote:
         actions = [
             'shallow-check each genome; skip if already v3 or no pending .v3 files',
             'archive originals into {genome_id}_v2_backup.tar.gz and promote pending .v3 files',
+            'generate .gff.arx from promoted GBK; update genome.json',
             'post-check each genome to verify',
             'delete BLAST databases (rebuild manually in arx when needed)',
         ]
@@ -320,15 +265,17 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         actions = [
             'shallow-check each genome; skip if already v3',
             'generate .v3 for gbk and assembly fna (contig IDs only)',
-            'archive originals and regenerate gff/faa/ffn from updated GBK',
+            'archive originals and regenerate faa/ffn from updated GBK',
+            'generate .gff.arx from updated GBK; update genome.json',
             'post-check each genome to verify',
             'delete BLAST databases (rebuild manually in arx when needed)',
         ]
     else:
         actions = [
             'shallow-check each genome; skip if already v3',
-            'generate .v3 for gbk, assembly fna, and gff (contig IDs only)',
+            'generate .v3 for gbk and assembly fna (contig IDs only)',
             'archive originals into {genome_id}_v2_backup.tar.gz and promote .v3 files',
+            'generate .gff.arx from promoted GBK; update genome.json',
             'post-check each genome to verify',
             'delete BLAST databases (rebuild manually in arx when needed)',
         ]
@@ -359,8 +306,38 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             names = ', '.join(os.path.basename(p) for p in pre_check.pending_files)
             print(f'{genome_id}: promoting {names}')
             v3_to_orig = {p: p[:-len('.v3')] for p in pre_check.pending_files}
-            archive = _promote_v3_files(v3_to_orig, genome_dir=genome.path, genome_id=genome_id)
+
+            # Detect FAA/FFN with non-v3 locus tags so we can back them up and regenerate from GBK.
+            gbk_filename = genome_json.get('cds_tool_gbk_file')
+            faa_ffn_regen = []  # [(seq_path, create_method_name)]
+            if gbk_filename:
+                for key, method in [('cds_tool_faa_file', 'create_faa'), ('cds_tool_ffn_file', 'create_ffn')]:
+                    seq_fname = genome_json.get(key)
+                    if seq_fname:
+                        seq_path = os.path.join(genome.path, seq_fname)
+                        if os.path.exists(seq_path) and seq_file_has_non_v3_locus_tags(seq_path, genome_id):
+                            faa_ffn_regen.append((seq_path, method))
+
+            extra_backup = [p for p, _ in faa_ffn_regen] or None
+            archive = _promote_v3_files(v3_to_orig, genome_dir=genome.path, genome_id=genome_id,
+                                        extra_backup=extra_backup)
             print(f'{genome_id}: archived originals → {os.path.basename(archive)}')
+
+            if faa_ffn_regen:
+                gbk_file = GenBankFile(os.path.join(genome.path, gbk_filename))
+                for seq_path, method in faa_ffn_regen:
+                    getattr(gbk_file, method)(seq_path)
+                    print(f'{genome_id}: regenerated {os.path.basename(seq_path)} from promoted GBK')
+
+            if gbk_filename:
+                gbk_path_p = os.path.join(genome.path, gbk_filename)
+                gff_arx = os.path.splitext(gbk_path_p)[0] + '.gff.arx'
+                GenBankFile(gbk_path_p).create_gff(gff_arx)
+                print(f'{genome_id}: generated {os.path.basename(gff_arx)}')
+                genome_json['cds_tool_gff_file'] = os.path.basename(gff_arx)
+                with open(os.path.join(genome.path, 'genome.json'), 'w') as _f:
+                    json.dump(genome_json, _f, indent=4)
+
             post_check = check_genome_v3(genome.path, genome_id, deep=False, contig_format=contig_format)
             if not post_check.is_v3:
                 reasons = '; '.join(post_check.issues)
@@ -442,20 +419,6 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                                   f'(seqid format may not be supported; plain or gnl|X|id expected). '
                                   f'Check {os.path.basename(asm_path)} manually.')
 
-            # 2c. Rewrite GFF contig seqids.
-            if not create_from_file and contig_map:
-                gff_filename = genome_json.get('cds_tool_gff_file')
-                gff_path = os.path.join(genome.path, gff_filename) if gff_filename else gbk_stem + '.gff'
-                if os.path.exists(gff_path):
-                    gff_v3 = gff_path + '.v3'
-                    v3_created.add(gff_v3)
-                    seqid_changed = _apply_contig_map_to_gff(gff_path, gff_v3, contig_map)
-                    print(f'{genome_id}: created {os.path.basename(gff_v3)} ({seqid_changed} seqids updated)')
-                    if seqid_changed == 0:
-                        print(f'{genome_id}: WARNING: {os.path.basename(gff_path)}: no seqids matched '
-                              f'(contig ID format in GFF may not be supported). Check manually.')
-                    v3_to_orig[gff_v3] = gff_path
-
 
         except Exception as e:
             for v3_path in v3_created:
@@ -475,18 +438,16 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             continue
 
         # 3. Archive originals → tar.gz, move .v3 → originals.
-        extra_backup = [gbk_stem + ext for ext in ('.fna', '.gff', '.faa', '.ffn')] if create_from_file else None
+        extra_backup = [gbk_stem + ext for ext in ('.fna', '.faa', '.ffn')] if create_from_file else None
         archive = _promote_v3_files(v3_to_orig, genome_dir=genome.path, genome_id=genome_id,
                                     extra_backup=extra_backup)
         print(f'{genome_id}: archived originals → {os.path.basename(archive)}')
 
-        # 3b. Regenerate gff/faa/ffn from the updated GBK (create_from_file only;
-        #     otherwise the promoted .v3 files already contain the updated contig seqids).
+        # 3b. Regenerate faa/ffn from the updated GBK (create_from_file only).
         if create_from_file:
             gbk_final = GenBankFile(gbk_path)
             for ext, create_fn in [
                 ('.fna', gbk_final.create_fna),
-                ('.gff', gbk_final.create_gff),
                 ('.faa', gbk_final.create_faa),
                 ('.ffn', gbk_final.create_ffn),
             ]:
@@ -494,6 +455,14 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                 if os.path.exists(out):
                     os.remove(out)
                 create_fn(out)
+
+        # 3c. Generate .gff.arx from promoted GBK; original .gff is left on disk.
+        gff_arx = gbk_stem + '.gff.arx'
+        GenBankFile(gbk_path).create_gff(gff_arx)
+        print(f'{genome_id}: generated {os.path.basename(gff_arx)}')
+        genome_json['cds_tool_gff_file'] = os.path.basename(gff_arx)
+        with open(os.path.join(genome.path, 'genome.json'), 'w') as _f:
+            json.dump(genome_json, _f, indent=4)
 
         # 4. Post-check
         post_check = check_genome_v3(genome.path, genome_id, deep=False, contig_format=contig_format)
@@ -572,7 +541,7 @@ def _gbk_to_assembly(gbk_path: str, fna_path: str) -> tuple[int, str]:
             if line.startswith('>'):
                 parts = line[1:].strip().split(None, 1)
                 orig_descriptions.append(parts[1] if len(parts) > 1 else '')
-    backup = fna_path + '.bak'
+    backup = fna_path + '.bkp'
     shutil.copy2(fna_path, backup)
     records = list(SeqIO.parse(gbk_path, 'genbank'))
     with open(fna_path, 'w') as f:
@@ -670,91 +639,6 @@ def check_assembly_compatibility(folder_structure_dir: str = None, skip_ignored:
     print(f'\nSummary: {ok} OK, {fixed} fixed, {incompatible} incompatible, {skipped} skipped')
 
 
-def _check_gff_compatibility_one(genome_id: str, genome_path: str, genome_json: dict) -> str | None:
-    """Check GFF/GBK compatibility for one genome. Returns an issue string or None if OK."""
-    gbk_filename = genome_json.get('cds_tool_gbk_file')
-    if not gbk_filename:
-        return 'SKIP: no cds_tool_gbk_file in genome.json'
-    gbk_path = os.path.join(genome_path, gbk_filename)
-    if not os.path.exists(gbk_path):
-        return f'SKIP: GBK not found: {gbk_path}'
-
-    gff_filename = genome_json.get('cds_tool_gff_file')
-    gbk_stem = os.path.splitext(gbk_path)[0]
-    gff_path = os.path.join(genome_path, gff_filename) if gff_filename else gbk_stem + '.gff'
-    if not os.path.exists(gff_path):
-        return f'SKIP: GFF not found: {gff_path}'
-
-    issues = []
-    gbk_file = GenBankFile(gbk_path)
-    gff_file = GffFile(gff_path)
-
-    gff_lt = None
-    try:
-        gbk_lt = gbk_file.detect_locus_tag_prefix()
-        gff_lt = gff_file.detect_locus_tag_prefix()
-        if gbk_lt != gff_lt:
-            issues.append(f'locus tag prefix mismatch: GBK={gbk_lt!r}, GFF={gff_lt!r}')
-    except (KeyError, ValueError) as e:
-        issues.append(f'could not read locus tag prefix: {e}')
-
-    # Scan column 9 for PREFIX_NNNNN values not matching the expected locus tag prefix.
-    # Catches stale accession-based IDs (e.g. protein_id=gnl|C|OLD_00001) in any format.
-    try:
-        if gff_lt is not None:
-            unexpected = gff_file.find_unexpected_id_prefixes(gff_lt)
-            if unexpected:
-                detail = ', '.join(f'{p!r} ({n}x)' for p, n in sorted(unexpected.items()))
-                issues.append(f'unexpected ID prefix(es) in GFF attributes: {detail}')
-    except Exception as e:
-        issues.append(f'could not scan GFF attribute prefixes: {e}')
-
-    try:
-        gbk_ids = set(gbk_file.get_contig_ids())
-        gff_ids = set(gff_file.get_seqids())
-        # Prokka GFFs use gnl|X|bare_id in seqids; strip for comparison
-        gff_bare = {s.rsplit('|', 1)[1] if '|' in s else s for s in gff_ids}
-        if gff_ids != gbk_ids and gff_bare != gbk_ids:
-            only_gbk = gbk_ids - gff_ids - gff_bare
-            only_gff = gff_ids - gbk_ids
-            issues.append(f'contig ID mismatch: {len(only_gbk)} only in GBK, {len(only_gff)} only in GFF')
-    except Exception as e:
-        issues.append(f'could not compare contig IDs: {e}')
-
-    return 'MISMATCH: ' + '; '.join(issues) if issues else None
-
-
-def check_gff_compatibility(folder_structure_dir: str = None, genome_dir: str = None,
-                            genome_id: str = None, skip_ignored: bool = False) -> None:
-    """
-    Check whether GBK and GFF contig IDs and locus tag prefixes match for each genome.
-
-    Pass --genome_dir to check a single genome instead of the whole folder structure.
-    genome_id defaults to the basename of genome_dir.
-    """
-    if genome_dir:
-        if genome_id is None:
-            genome_id = os.path.basename(genome_dir.rstrip('/'))
-        genome_json = json.load(open(os.path.join(genome_dir, 'genome.json')))
-        result = _check_gff_compatibility_one(genome_id, genome_dir, genome_json)
-        print(f'{genome_id}: {result or "OK"}')
-        return
-
-    folder_structure_dir = _get_folder_structure_dir(folder_structure_dir)
-    ok = incompatible = skipped = 0
-
-    for genome in loop_genomes(folder_structure_dir=folder_structure_dir, skip_ignored=skip_ignored):
-        result = _check_gff_compatibility_one(genome.identifier, genome.path, genome.json)
-        print(f'{genome.identifier}: {result or "OK"}')
-        if result is None:
-            ok += 1
-        elif result.startswith('SKIP'):
-            skipped += 1
-        else:
-            incompatible += 1
-
-    print(f'\nSummary: {ok} OK, {incompatible} incompatible, {skipped} skipped')
-
 
 def check_v3(folder_structure_dir: str = None, genome_dir: str = None, genome_id: str = None,
              deep: bool = False, contig_format: str = '_scf{n}'):
@@ -787,14 +671,17 @@ def check_v3(folder_structure_dir: str = None, genome_dir: str = None, genome_id
 def main():
     from fire import Fire
 
-    Fire({
-        'get_current_version': get_folder_structure_version,
-        '1_to_2': from_1_to_2,
-        '2_to_3': from_2_to_3,
-        'check_v3': check_v3,
-        'check_assembly_compatibility': check_assembly_compatibility,
-        'check_gff_compatibility': check_gff_compatibility,
-    })
+    try:
+        Fire({
+            'get_current_version': get_folder_structure_version,
+            '1_to_2': from_1_to_2,
+            '2_to_3': from_2_to_3,
+            'check_v3': check_v3,
+            'check_assembly_compatibility': check_assembly_compatibility,
+        })
+    except KeyboardInterrupt:
+        print('\nCancelled.')
+        sys.exit(1)
 
 
 if __name__ == '__main__':

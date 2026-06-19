@@ -542,12 +542,10 @@ def import_genome(
             gbk.create_fna(fna=fna_path)
             fna = FastaFile(fna_path)
 
-        gff = import_settings.find_file('gff', root_dir=work_dir, as_class=GffFile, expected=False)
-        if gff is None:
-            logging.info('Generating .gff from .gbk.')
-            gff_path = os.path.join(work_dir, base + '.gff')
-            gbk.create_gff(gff=gff_path)
-            gff = GffFile(gff_path)
+        logging.info('Generating .gff.arx from .gbk.')
+        gff_path = os.path.join(work_dir, base + '.gff.arx')
+        gbk.create_gff(gff=gff_path)
+        gff = GffFile(gff_path)
 
         ffn = import_settings.find_file('ffn', root_dir=work_dir, as_class=FastaFile, expected=False)
         if ffn is None:

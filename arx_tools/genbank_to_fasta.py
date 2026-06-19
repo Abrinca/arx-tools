@@ -16,26 +16,53 @@ class GenBankToFasta:
 
     @classmethod
     def create_gff(cls, gbk: str, out: str):
-        """Generate a GFF3 file from a GenBank file."""
-        strand_map = {1: '+', -1: '-', 0: '.', None: '.'}
-        with open(gbk) as gbk_f, open(out, 'w') as out_f:
-            out_f.write('##gff-version 3\n')
-            for rec in SeqIO.parse(gbk_f, 'genbank'):
-                seqid = rec.id
-                for feature in rec.features:
-                    if 'locus_tag' not in feature.qualifiers:
-                        continue
-                    locus_tag = feature.qualifiers['locus_tag'][0]
-                    product = feature.qualifiers.get('product', ['unknown'])[0].replace(';', ',').replace('=', '-')
-                    feat_type = feature.type
-                    strand = strand_map.get(feature.location.strand, '.')
-                    phase = '0' if feat_type == 'CDS' else '.'
-                    parts = getattr(feature.location, 'parts', None) or [feature.location]
-                    for part in parts:
-                        start = int(part.start) + 1
-                        end = int(part.end)
-                        attrs = f'locus_tag={locus_tag};product={product}'
-                        out_f.write(f'{seqid}\t.\t{feat_type}\t{start}\t{end}\t.\t{strand}\t{phase}\t{attrs}\n')
+        """Generate a GFF3 file with gene/CDS hierarchy from a GenBank file."""
+        from BCBio import GFF as _GFF
+
+        _CDS_CHILDREN = {'sig_peptide', 'signal_peptide_region_of_CDS'}
+        _NO_ID_TYPES = {'source', 'remark'}
+
+        records = list(SeqIO.parse(gbk, 'genbank'))
+
+        for rec in records:
+            gene_id_by_lt: dict[str, str] = {}
+            cds_id_by_lt: dict[str, str] = {}
+            child_counters: dict[str, int] = {}
+
+            for feat in rec.features:
+                lt = feat.qualifiers.get('locus_tag', [None])[0]
+                if feat.type == 'gene' and lt:
+                    gid = f'{lt}_gene'
+                    feat.qualifiers['ID'] = [gid]
+                    gene_id_by_lt[lt] = gid
+
+            for feat in rec.features:
+                if feat.type in ('gene', *_NO_ID_TYPES):
+                    continue
+                lt = feat.qualifiers.get('locus_tag', [None])[0]
+
+                if 'product' in feat.qualifiers and 'Name' not in feat.qualifiers:
+                    feat.qualifiers['Name'] = feat.qualifiers['product'][:1]
+
+                if feat.type in _CDS_CHILDREN and lt:
+                    child_counters[lt] = child_counters.get(lt, 0) + 1
+                    feat.qualifiers['ID'] = [f'{lt}_{feat.type}_{child_counters[lt]}']
+                    if lt in cds_id_by_lt:
+                        feat.qualifiers['Parent'] = [cds_id_by_lt[lt]]
+                elif lt and lt in gene_id_by_lt:
+                    feat.qualifiers.setdefault('ID', [lt])
+                    feat.qualifiers['Parent'] = [gene_id_by_lt[lt]]
+                    if feat.type == 'CDS':
+                        cds_id_by_lt[lt] = feat.qualifiers['ID'][0]
+                else:
+                    if lt:
+                        feat.qualifiers.setdefault('ID', [lt])
+                    else:
+                        feat.qualifiers.setdefault(
+                            'ID', [f'{rec.id}_{feat.type}_{int(feat.location.start) + 1}'])
+
+        with open(out, 'w') as f:
+            _GFF.write(records, f)
 
     @classmethod
     def convert(cls, gbk, out: str, format: str, strict: bool = True):

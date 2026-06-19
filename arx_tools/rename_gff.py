@@ -1,10 +1,13 @@
 import os
 import re
+import warnings
 
 from .utils import GenomeFile, create_replace_function, split_locus_tag
 
 _ID_PREFIX_RE = re.compile(r'([A-Za-z0-9][A-Za-z0-9._-]{3,}_)(\d{5,})')
 _STRUCTURAL_PREFIXES = ('cds-', 'gene-', 'rna-', 'exon-', 'id-')
+_FREE_TEXT_KEYS = frozenset({'product', 'Note', 'note', 'inference', 'description'})
+_MIN_PREFIX_CHARS = 4  # min chars before trailing '_'; filters NCBI 2-letter accession prefixes like WP_, NP_
 
 
 class NoLocusTagInGffLine(KeyError):
@@ -117,29 +120,53 @@ class GffFile(GenomeFile):
                     seen_set.add(seqid)
         return seen
 
-    def find_unexpected_id_prefixes(self, expected_prefix: str) -> dict[str, int]:
-        """Scan every feature line for PREFIX_NNNNN patterns where PREFIX != expected_prefix.
+    def find_unexpected_id_prefixes(self, expected_prefix: str) -> dict[str, tuple[int, str]]:
+        """Scan every key=value attribute for PREFIX_NNNNN patterns where PREFIX != expected_prefix.
 
-        Searches the whole line rather than just column 9, so it handles GFF2/GTF formats
-        (where attributes use 'gene_id "VALUE"' instead of key=value) as well as GFF3.
-        Returns {unexpected_prefix: occurrence_count}.
+        Skips known free-text keys (product, Note, inference, description) to avoid false positives
+        from product descriptions that reference other organisms' gene names. All other keys are
+        checked, including old_locus_tag, Alias, and any tool-specific keys.
+        Prefixes with fewer than _MIN_PREFIX_CHARS chars before the trailing '_' are skipped
+        to avoid flagging short NCBI accession prefixes (WP_, NP_, …) used as CDS feature IDs
+        in PGAP-annotated GFFs.
+        Returns {unexpected_prefix: (occurrence_count, example_snippet)}.
         """
-        counts: dict[str, int] = {}
+        counts: dict[str, tuple[int, str]] = {}
         with open(self.path) as f:
             for line in f:
                 if line == '##FASTA\n':
                     break
                 if line.startswith('#') or not line.strip():
                     continue
-                for m in _ID_PREFIX_RE.finditer(line):
-                    prefix = m.group(1)
-                    # Strip structural GFF3 wrappers (cds-, gene-, rna-, ...) before comparing
-                    for sp in _STRUCTURAL_PREFIXES:
-                        if prefix.startswith(sp):
-                            prefix = prefix[len(sp):]
-                            break
-                    if prefix != expected_prefix:
-                        counts[prefix] = counts.get(prefix, 0) + 1
+                cols = line.split('\t')
+                if len(cols) != 9:
+                    continue
+                for kv in cols[8].split(';'):
+                    if '=' not in kv:
+                        continue
+                    key, _, value = kv.partition('=')
+                    if key in _FREE_TEXT_KEYS:
+                        continue
+                    for m in _ID_PREFIX_RE.finditer(value):
+                        prefix = m.group(1)
+                        for sp in _STRUCTURAL_PREFIXES:
+                            if prefix.startswith(sp):
+                                prefix = prefix[len(sp):]
+                                break
+                        if len(prefix) - 1 < _MIN_PREFIX_CHARS:  # -1 to exclude trailing '_'
+                            if prefix != expected_prefix:
+                                warnings.warn(
+                                    f'Short prefix {prefix!r} found in {self.path!r}; '
+                                    f'expected {expected_prefix!r}. This may be an NCBI accession '
+                                    f'prefix (e.g. WP_, NP_) or an unexpected short locus tag prefix.',
+                                    stacklevel=2,
+                                )
+                            continue
+                        if prefix != expected_prefix:
+                            if prefix not in counts:
+                                counts[prefix] = (0, f'{key}={value[:m.end()]}')
+                            n, ex = counts[prefix]
+                            counts[prefix] = (n + 1, ex)
         return counts
 
     def detect_locus_tag_prefix(self) -> str:

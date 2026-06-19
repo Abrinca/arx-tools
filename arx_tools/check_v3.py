@@ -62,8 +62,17 @@ def check_genome_v3(
     asm_filename = genome_json.get('assembly_fasta_file')
     custom_annotations = genome_json.get('custom_annotations', [])
 
+    gff_filename = genome_json.get('cds_tool_gff_file')
+    if not gff_filename and gbk_filename:
+        gff_filename = os.path.splitext(gbk_filename)[0] + '.gff'
+
     # Detect pending .v3 files
-    for filename in ([gbk_filename] if gbk_filename else []) + ([asm_filename] if asm_filename else []):
+    _pending_filenames = (
+        ([gbk_filename] if gbk_filename else [])
+        + ([asm_filename] if asm_filename else [])
+        + ([gff_filename] if gff_filename else [])
+    )
+    for filename in _pending_filenames:
         v3 = os.path.join(genome_dir, filename) + '.v3'
         if os.path.exists(v3):
             result.has_pending_v3_files = True
@@ -107,6 +116,20 @@ def check_genome_v3(
                 _check_annotation(ca_path, gene_pattern, is_eggnog, result)
 
     return result
+
+
+def seq_file_has_non_v3_locus_tags(path: str, genome_id: str) -> bool:
+    """Return True if any FASTA header in path has a non-v3 locus tag."""
+    pattern = re.compile(rf'^{re.escape(genome_id)}_\d{{{_GENE_DIGITS},}}$')
+    with open(path) as f:
+        for line in f:
+            if line.startswith('>'):
+                raw_id = line[1:].split(None, 1)[0]
+                if raw_id.startswith('gnl|') and raw_id.count('|') >= 2:
+                    raw_id = raw_id[raw_id.index('|', 4) + 1:]
+                if not pattern.match(raw_id):
+                    return True
+    return False
 
 
 def _check_faa_ffn(path: str, lt_pattern, result: V3CheckResult):

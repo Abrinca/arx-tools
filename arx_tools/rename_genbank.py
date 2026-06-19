@@ -7,6 +7,214 @@ from .utils import GenomeFile, query_int, entrez_organism_to_taxid, date_to_stri
     split_locus_tag, contig_format_to_regex
 from .genbank_to_fasta import GenBankToFasta
 
+# ── GenBank header text-patching helpers ──────────────────────────────────────
+# BioPython round-trips lose LOCUS metadata (topology, division, date) from
+# Prokka multi-line LOCUS headers, and drop secondary ACCESSION entries due to
+# a key mismatch (parser writes 'accessions', writer reads 'accession').
+#
+# normalize_contigs uses pure text replacement (no BioPython write at all).
+# normalize uses BioPython write for feature edits then text-patches headers.
+
+_DATE_RE = re.compile(
+    r'\b(\d{2}-(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)-\d{4})\b'
+)
+_TOPOLOGY_RE = re.compile(r'\b(circular|linear)\b')
+_DIVISION_RE = re.compile(
+    r'\b(BCT|VRL|PHG|SYN|UNA|RNA|CON|ROD|MAM|INV|PLN|PRI|HUM|ENV|PAT|'
+    r'EST|STS|GSS|HTC|TSA|WGS|PRO|UNK)\b'
+)
+_KNOWN_TOPOLOGY = frozenset({'circular', 'linear'})
+_KNOWN_DIVISION = frozenset({
+    'BCT', 'VRL', 'PHG', 'SYN', 'UNA', 'RNA', 'CON', 'ROD',
+    'MAM', 'INV', 'PLN', 'PRI', 'HUM', 'ENV', 'PAT', 'EST',
+    'STS', 'GSS', 'HTC', 'TSA', 'WGS', 'PRO', 'UNK',
+})
+
+# Matches a standard or Prokka LOCUS line: name, length, unit, rest-of-line
+_LOCUS_LINE_RE = re.compile(r'^LOCUS\s+(\S+)\s+(\d+)\s+(bp|aa)\s+(.*?)$')
+
+
+def _patch_contig_id_lines(lines: list[str], name_map: dict[str, str]) -> list[str]:
+    """
+    Rename contig IDs in GenBank file lines by pure text replacement.
+
+    Replaces the LOCUS name field, the primary ACCESSION entry, and the VERSION
+    entry.  Handles Prokka multi-line LOCUS (date continuation on next line).
+
+    name_map maps old rec.name (= LOCUS name token) to the new contig ID.
+    """
+    out: list[str] = []
+    i = 0
+    current_new_id: str | None = None
+
+    while i < len(lines):
+        line = lines[i]
+
+        if line.startswith('LOCUS'):
+            m = _LOCUS_LINE_RE.match(line.rstrip('\n'))
+            if m:
+                old_name, length, unit, rest = m.groups()
+                current_new_id = name_map.get(old_name, old_name)
+
+                # Absorb a Prokka date-continuation line (date wrapped to next line)
+                if (i + 1 < len(lines)
+                        and lines[i + 1].startswith('            ')
+                        and _DATE_RE.search(lines[i + 1])):
+                    rest = rest.rstrip() + ' ' + lines[i + 1].strip()
+                    i += 1
+
+                # BioPython uses a 28-char name_length field: name + right-justified length.
+                # If the new name is long, extend the field so length always has a space before it.
+                field_width = max(28, len(current_new_id) + 1 + len(length))
+                name_length = length.rjust(field_width)
+                name_length = current_new_id + name_length[len(current_new_id):]
+
+                out.append(f'LOCUS       {name_length} {unit}    {rest.rstrip()}\n')
+            else:
+                out.append(line)
+
+        elif line.startswith('ACCESSION'):
+            acc_rest = line[len('ACCESSION'):].strip()
+            tokens = acc_rest.split()
+            if tokens:
+                new_primary = name_map.get(tokens[0], current_new_id or tokens[0])
+                out.append('ACCESSION   ' + ' '.join([new_primary] + tokens[1:]) + '\n')
+            elif current_new_id:
+                out.append(f'ACCESSION   {current_new_id}\n')
+            else:
+                out.append(line)
+
+        elif line.startswith('VERSION'):
+            out.append(f'VERSION     {current_new_id}\n' if current_new_id else line)
+
+        elif line.startswith('//'):
+            out.append(line)
+            current_new_id = None
+
+        else:
+            out.append(line)
+
+        i += 1
+
+    return out
+
+
+def _read_accession_lines(path: str) -> list[str]:
+    """Return the raw ACCESSION line (no trailing newline) for each record."""
+    results: list[str] = []
+    current: str | None = None
+
+    with open(path) as fh:
+        for line in fh:
+            if line.startswith('LOCUS'):
+                current = None
+            elif line.startswith('ACCESSION') and current is None:
+                current = line.rstrip('\n')
+            elif line.startswith('//'):
+                results.append(current or '')
+                current = None
+
+    return results
+
+
+def _patch_accession_lines(
+    lines: list[str],
+    original_accession_lines: list[str],
+    name_map: dict[str, str],
+) -> list[str]:
+    """
+    In BioPython-written GBK lines, replace each ACCESSION primary with the new
+    contig ID and restore any secondary accessions from the original file.
+
+    name_map maps old rec.name (original primary accession) to the new contig ID.
+    """
+    out: list[str] = []
+    rec_index = -1
+
+    for line in lines:
+        if line.startswith('LOCUS'):
+            rec_index += 1
+            out.append(line)
+        elif line.startswith('ACCESSION') and 0 <= rec_index < len(original_accession_lines):
+            orig = original_accession_lines[rec_index]
+            if orig:
+                orig_tokens = orig[len('ACCESSION'):].strip().split()
+                if orig_tokens:
+                    new_primary = name_map.get(orig_tokens[0], '')
+                    if not new_primary:
+                        bio_tokens = line[len('ACCESSION'):].strip().split()
+                        new_primary = bio_tokens[0] if bio_tokens else ''
+                    out.append('ACCESSION   ' + ' '.join([new_primary] + orig_tokens[1:]) + '\n')
+                else:
+                    out.append(line)
+            else:
+                out.append(line)
+        else:
+            out.append(line)
+
+    return out
+
+
+def _parse_locus_fields_raw(gbk_path: str) -> list[dict]:
+    """
+    Text-scan a GenBank file and return one dict per record with the raw LOCUS
+    line fields (topology, data_file_division, date), handling the Prokka
+    multi-line LOCUS format where the date wraps onto the next line.
+    Used by normalize() to restore LOCUS metadata after BioPython write.
+    """
+    results = []
+    current: dict | None = None
+    in_locus_continuation = False
+
+    with open(gbk_path) as fh:
+        for line in fh:
+            if line.startswith('LOCUS'):
+                current = {'topology': None, 'data_file_division': None, 'date': None}
+                in_locus_continuation = True
+                _scan_locus_tokens(line, current)
+            elif in_locus_continuation and line[:1] == ' ':
+                _scan_locus_tokens(line, current)
+                in_locus_continuation = False
+            else:
+                in_locus_continuation = False
+                if line.startswith('//') and current is not None:
+                    results.append(current)
+                    current = None
+
+    if current is not None:
+        results.append(current)
+    return results
+
+
+def _scan_locus_tokens(line: str, acc: dict) -> None:
+    """Fill missing topology/division/date slots in acc from tokens in line."""
+    if acc['topology'] is None:
+        m = _TOPOLOGY_RE.search(line)
+        if m:
+            acc['topology'] = m.group(1)
+    if acc['data_file_division'] is None:
+        m = _DIVISION_RE.search(line)
+        if m:
+            acc['data_file_division'] = m.group(1)
+    if acc['date'] is None:
+        m = _DATE_RE.search(line)
+        if m:
+            acc['date'] = m.group(1)
+
+
+def _restore_locus_fields(rec, raw: dict) -> None:
+    """
+    Apply raw-extracted LOCUS fields to a BioPython SeqRecord, correcting
+    misparses from multi-line LOCUS headers.  Used by normalize().
+    """
+    if raw['topology'] and not rec.annotations.get('topology'):
+        rec.annotations['topology'] = raw['topology']
+    if rec.annotations.get('data_file_division') in _KNOWN_TOPOLOGY and raw['data_file_division']:
+        rec.annotations['data_file_division'] = raw['data_file_division']
+    date = rec.annotations.get('date', '')
+    if (not date or date in _KNOWN_DIVISION or date == '01-JAN-1980') and raw['date']:
+        rec.annotations['date'] = raw['date']
+
 
 class GenBankFile(GenomeFile):
     def rename(
@@ -75,13 +283,11 @@ class GenBankFile(GenomeFile):
                               contig_ids: list[str] = None,
                               contig_format: str = '_scf{n}') -> dict:
         """
-        Canonicalize only contig IDs in a GenBank file; locus tags are left untouched.
+        Canonicalize only contig IDs in a GenBank file using pure text replacement.
+        Locus tags are left untouched. All LOCUS metadata is preserved exactly.
 
         Returns contig_map {old_id: new_id}.
         """
-        contig_map = {}
-        records = []
-
         with open(self.path) as f:
             all_records = list(SeqIO.parse(f, 'genbank'))
 
@@ -91,15 +297,18 @@ class GenBankFile(GenomeFile):
                     f'contig_ids count ({len(contig_ids)}) does not match number of records '
                     f'({len(all_records)}) in {self.path}')
 
+        name_map: dict[str, str] = {}
+        contig_map: dict[str, str] = {}
         for i, rec in enumerate(all_records):
-            new_contig_id = contig_ids[i] if contig_ids is not None else f'{genome_id}{contig_format.format(n=i + 1)}'
-            contig_map[rec.id] = new_contig_id
-            rec.id = new_contig_id
-            rec.name = new_contig_id[:16]
-            records.append(rec)
+            new_id = contig_ids[i] if contig_ids is not None else f'{genome_id}{contig_format.format(n=i + 1)}'
+            name_map[rec.name] = new_id
+            contig_map[rec.id] = new_id
+
+        with open(self.path) as f:
+            lines = f.readlines()
 
         with open(out, 'w') as f:
-            SeqIO.write(records, f, 'genbank')
+            f.writelines(_patch_contig_id_lines(lines, name_map))
 
         return contig_map
 
@@ -116,9 +325,12 @@ class GenBankFile(GenomeFile):
 
         Returns (contig_map, lt_map) where both are {old_id: new_id} dicts.
         """
+        raw_locus = _parse_locus_fields_raw(self.path)
+        original_accession_lines = _read_accession_lines(self.path)
         lt_counter = 0
         lt_map = {}
         contig_map = {}
+        name_map: dict[str, str] = {}
         records = []
 
         with open(self.path) as f:
@@ -136,8 +348,11 @@ class GenBankFile(GenomeFile):
             else:
                 new_contig_id = f'{genome_id}{contig_format.format(n=i + 1)}'
             contig_map[rec.id] = new_contig_id
+            name_map[rec.name] = new_contig_id
             rec.id = new_contig_id
             rec.name = new_contig_id[:16]  # LOCUS line is limited to 16 chars in genbank format
+            if i < len(raw_locus):
+                _restore_locus_fields(rec, raw_locus[i])
 
             for feature in rec.features:
                 if 'locus_tag' not in feature.qualifiers:
@@ -157,8 +372,14 @@ class GenBankFile(GenomeFile):
 
             records.append(rec)
 
+        import io
+        buf = io.StringIO()
+        SeqIO.write(records, buf, 'genbank')
+        bio_lines = buf.getvalue().splitlines(keepends=True)
+        patched = _patch_accession_lines(bio_lines, original_accession_lines, name_map)
+
         with open(out, 'w') as f:
-            SeqIO.write(records, f, 'genbank')
+            f.writelines(patched)
 
         return contig_map, lt_map
 

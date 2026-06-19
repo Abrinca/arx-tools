@@ -23,7 +23,7 @@ from arx_tools.update_folder_structure import (
 from arx_tools.check_v3 import check_genome_v3
 from arx_tools.rename_genbank import GenBankFile
 
-from tests.helpers import GENOME_ID, _write_gbk, _write_fna, _write_annotation
+from helpers import GENOME_ID, _write_gbk, _write_fna, _write_annotation
 
 
 # ── _promote_v3_files ─────────────────────────────────────────────────────────
@@ -146,6 +146,57 @@ class TestNormalizeContigsOnly(TestCase):
             with self.assertRaises(ValueError):
                 GenBankFile(gbk_path).normalize_contigs(
                     out=out_path, genome_id=GENOME_ID, contig_ids=['only_one'])
+        finally:
+            for p in (gbk_path, out_path):
+                if os.path.exists(p):
+                    os.unlink(p)
+
+    def test_multiline_locus_topology_preserved(self):
+        """
+        Prokka wraps the LOCUS line when name+length exceed 80 cols:
+            LOCUS       LONG_NAME_scf0001 9999999 bp    DNA     circular BCT
+                        19-MAY-2020
+        BioPython misparsed this (topology=None, division='circular', date='BCT').
+        normalize_contigs must restore circular topology and correct division/date.
+        """
+        # Raw GBK with multi-line LOCUS header (Prokka large-genome format)
+        raw_gbk = (
+            'LOCUS       FAM19038-p1-1_scf0001 2999408 bp    DNA     circular BCT\n'
+            '            19-MAY-2020\n'
+            'DEFINITION  Acidipropionibacterium thoenii strain FAM19038.\n'
+            'ACCESSION   \n'
+            'VERSION\n'
+            'FEATURES             Location/Qualifiers\n'
+            '     source          1..60\n'
+            '                     /organism="Acidipropionibacterium thoenii"\n'
+            '                     /mol_type="genomic DNA"\n'
+            '     gene            1..60\n'
+            f'                     /locus_tag="{GENOME_ID}_000001"\n'
+            '     CDS             1..60\n'
+            f'                     /locus_tag="{GENOME_ID}_000001"\n'
+            '                     /product="hypothetical protein"\n'
+            '                     /translation="MAAAA"\n'
+            'ORIGIN\n'
+            '        1 atgcatgcat gcatgcatgc atgcatgcat gcatgcatgc atgcatgcat gcatgcatgc\n'
+            '//\n'
+        )
+
+        with (tempfile.NamedTemporaryFile(suffix='.gbk', delete=False, mode='w') as gbk_f,
+              tempfile.NamedTemporaryFile(suffix='.gbk', delete=False) as out_f):
+            gbk_path, out_path = gbk_f.name, out_f.name
+            gbk_f.write(raw_gbk)
+
+        import warnings
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                GenBankFile(gbk_path).normalize_contigs(out=out_path, genome_id=GENOME_ID)
+
+            with open(out_path) as f:
+                locus_line = f.readline()
+            self.assertIn('circular', locus_line, f'topology lost in LOCUS line: {locus_line!r}')
+            self.assertIn('BCT', locus_line, f'division lost in LOCUS line: {locus_line!r}')
+            self.assertIn('19-MAY-2020', locus_line, f'date lost in LOCUS line: {locus_line!r}')
         finally:
             for p in (gbk_path, out_path):
                 if os.path.exists(p):
@@ -548,12 +599,15 @@ class TestCreateOnlyAndPromote(TestCase):
 
     def test_promote_promotes_pending_files(self):
         """--promote archives originals and moves .v3 files into place."""
+        from unittest.mock import patch
+        from arx_tools.rename_genbank import GenBankFile
         with tempfile.TemporaryDirectory() as tmp:
             genome_dir = self._setup_fs(tmp)
             gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
             with open(gbk_path + '.v3', 'w') as f:
                 f.write('v3 content')
-            self._run(tmp, promote=True)
+            with patch.object(GenBankFile, 'create_gff'):
+                self._run(tmp, promote=True)
             self.assertFalse(os.path.exists(gbk_path + '.v3'))
             with open(gbk_path) as f:
                 self.assertEqual(f.read(), 'v3 content')

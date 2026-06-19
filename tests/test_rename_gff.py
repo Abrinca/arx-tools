@@ -44,6 +44,14 @@ ATGC
 TTTT
 """
 
+SAMPLE_GFF_MIXED_PREFIXES = """\
+##gff-version 3
+##sequence-region GENOME_scf1 1 5000
+GENOME_scf1\tProkka\tgene\t1\t900\t.\t+\t.\tID=gene-NEW_000001;Name=NEW_000001;locus_tag=NEW_000001;old_locus_tag=PREV_000001
+GENOME_scf1\tProkka\tCDS\t1\t900\t.\t+\t0\tID=cds-NEW_000001;Parent=gene-NEW_000001;locus_tag=NEW_000001;protein_id=WP_012345;product=hypothetical protein similar to PREV_000002
+GENOME_scf1\tProkka\tgene\t1000\t1900\t.\t+\t.\tID=gene-NEW_000002;Name=NEW_000002;locus_tag=NEW_000002
+"""
+
 LT_MAP = {
     'OLD_000001': 'NEW_000001',
     'OLD_000002': 'NEW_000002',
@@ -121,6 +129,43 @@ class Test(unittest.TestCase):
         # original lengths preserved
         self.assertIn('##sequence-region GENOME_scf1 1 40066', content)
         self.assertIn('##sequence-region GENOME_scf2 1 39909', content)
+
+    def test_find_unexpected_id_prefixes_catches_old_locus_tag(self):
+        """old_locus_tag with a stale prefix must be reported."""
+        src = os.path.join(self.tmp, 'mixed.gff')
+        with open(src, 'w') as f:
+            f.write(SAMPLE_GFF_MIXED_PREFIXES)
+        result = GffFile(src).find_unexpected_id_prefixes('NEW_')
+        self.assertIn('PREV_', result, 'stale old_locus_tag prefix should be detected')
+        count, example = result['PREV_']
+        self.assertEqual(count, 1)
+        self.assertIn('old_locus_tag', example)
+
+    def test_find_unexpected_id_prefixes_ignores_product_text(self):
+        """Matching patterns in product= free-text must not be flagged."""
+        src = os.path.join(self.tmp, 'mixed.gff')
+        with open(src, 'w') as f:
+            f.write(SAMPLE_GFF_MIXED_PREFIXES)
+        result = GffFile(src).find_unexpected_id_prefixes('NEW_')
+        # product field contains "PREV_000002" but should not add extra counts
+        if 'PREV_' in result:
+            self.assertEqual(result['PREV_'][0], 1, 'only old_locus_tag hit should be counted, not product text')
+
+    def test_find_unexpected_id_prefixes_ignores_short_ncbi_prefixes(self):
+        """Short NCBI prefixes like WP_ must not be flagged."""
+        src = os.path.join(self.tmp, 'mixed.gff')
+        with open(src, 'w') as f:
+            f.write(SAMPLE_GFF_MIXED_PREFIXES)
+        result = GffFile(src).find_unexpected_id_prefixes('NEW_')
+        self.assertNotIn('WP_', result)
+
+    def test_find_unexpected_id_prefixes_clean_gff(self):
+        """A GFF where all prefixes match expected returns empty dict."""
+        src = os.path.join(self.tmp, 'clean.gff')
+        with open(src, 'w') as f:
+            f.write(SAMPLE_GFF)
+        result = GffFile(src).find_unexpected_id_prefixes('OLD_')
+        self.assertEqual(result, {})
 
     def test_rename_by_map_gnl_embedded_fasta_renamed(self):
         """Embedded ##FASTA contig headers must also be renamed when contig_id_map is set."""

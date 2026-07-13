@@ -35,18 +35,45 @@ class FastaFile(GenomeFile):
         if validate:
             self.validate_locus_tags(locus_tag_prefix=new_locus_tag_prefix)
 
-    def rename_by_map(self, out: str, lt_map: dict, update_path: bool = True) -> None:
+    def rename_by_map(self, out: str, lt_map: dict, update_path: bool = True,
+                      old_locus_tag_prefix: str = None) -> None:
+        skipped = []
+        _skip_seq = False
         with open(self.path) as f_in, open(out, 'w') as f_out:
             for line in f_in:
                 if line.startswith('>'):
                     parts = line[1:].split(None, 1)
                     bare = clean_locus_tag(parts[0])  # strips gnl|X| prefix if present
                     if bare not in lt_map:
-                        raise ValueError(f'Locus tag {parts[0]!r} not found in lt_map. {self.path=}')
+                        if old_locus_tag_prefix is not None:
+                            tag_prefix, _ = split_locus_tag(bare)
+                            if tag_prefix != old_locus_tag_prefix:
+                                # Foreign prefix (e.g. Bakta ncRNA with its own random prefix):
+                                # not a CDS, not in the GBK locus_tag namespace — skip.
+                                skipped.append(bare)
+                                _skip_seq = True
+                                continue
+                            raise ValueError(
+                                f'{os.path.basename(self.path)}: locus tag {bare!r} (prefix {old_locus_tag_prefix!r}) '
+                                f'is not present in the GBK. FFN and GBK do not match.'
+                            )
+                        _example_prefix = split_locus_tag(next(iter(lt_map)))[0] if lt_map else '?'
+                        raise ValueError(
+                            f'{os.path.basename(self.path)}: locus tag {bare!r} is not present in the GBK '
+                            f'(GBK uses prefix {_example_prefix!r}). FFN and GBK do not match.'
+                        )
+                    _skip_seq = False
                     suffix = (' ' + parts[1]) if len(parts) > 1 else '\n'
                     f_out.write(f'>{lt_map[bare]}{suffix}')
+                elif _skip_seq:
+                    continue
                 else:
                     f_out.write(line)
+        if skipped:
+            logging.warning(
+                f'{os.path.basename(self.path)}: skipped {len(skipped)} FFN entries not present in the GBK '
+                f'(e.g. Bakta regulatory features): {skipped[:5]}{"..." if len(skipped) > 5 else ""}'
+            )
         if update_path:
             self.path = out
 

@@ -10,7 +10,7 @@ from typing import Union
 from schema import SchemaError
 
 from . import __folder_structure_version__
-from .utils import entrez_organism_to_taxid, GenomeFile, merge_json, get_folder_structure_version, WorkingDirectory
+from .utils import entrez_organism_to_taxid, GenomeFile, merge_json, get_folder_structure_version, WorkingDirectory, split_locus_tag
 from .rename_genbank import GenBankFile
 from .rename_gff import GffFile
 from .rename_fasta import FastaFile
@@ -169,7 +169,7 @@ class ImportSettings:
         self.check_expected(files, expected, glob_pattern)
         return files
 
-    def find_file(self, type_: str, root_dir: str, as_class=None, expected: bool = True) -> Union[str, GenomeFile, None]:
+    def find_file(self, type_: str, root_dir: str, as_class=None, expected: bool = True, prefer: str = None) -> Union[str, GenomeFile, None]:
         files = self.find_files(type_, root_dir)
 
         if len(files) == 1:
@@ -178,13 +178,20 @@ class ImportSettings:
                 return abs_path
             else:
                 return as_class(abs_path)
+        elif len(files) > 1 and prefer is not None:
+            preferred = [f for f in files if os.path.splitext(os.path.basename(f))[0] == prefer]
+            if len(preferred) == 1:
+                ignored = [f for f in files if f != preferred[0]]
+                logging.warning(f'Multiple {type_} files found; using {preferred[0]!r}, ignoring: {ignored}')
+                abs_path = os.path.join(root_dir, preferred[0])
+                return as_class(abs_path) if as_class else abs_path
+
+        if expected:
+            raise AssertionError(
+                f'Error: found {len(files)} files of {type_=}: {files=}')
         else:
-            if expected:
-                raise AssertionError(
-                    f'Error: found {len(files)} files of {type_=}: {files=}')
-            else:
-                logging.info(f'Found no {type_} files.')
-                return None
+            logging.info(f'Found no {type_} files.')
+            return None
 
     def find_custom_annotations(self, root_dir: str):
         annotations = []
@@ -513,6 +520,7 @@ def import_genome(
 
             # After normalization, rename provided gff/faa/ffn in-place using the exact locus tag map.
             # contig_map keys are bare GBK contig IDs; GffFile.rename_by_map strips gnl|X| prefix before lookup.
+            _annotation_tool = gbk.detect_annotation_tool()
             with WorkingDirectory(work_dir):
                 for _gff_name in glob('*.gff'):
                     _gff = GffFile(os.path.join(work_dir, _gff_name))
@@ -520,11 +528,24 @@ def import_genome(
                     _gff.rename_by_map(out=_tmp, lt_map=lt_map, contig_id_map=contig_map, update_path=False)
                     os.replace(_tmp, _gff.path)
                     logging.info(f'Renamed locus tags and contig IDs in provided GFF: {_gff_name}')
-                for _fasta_pattern, _label in (('*.faa', 'FAA'), ('*.ffn', 'FFN')):
+                # Bakta writes ncRNA features (riboswitches etc.) to the FFN with its own random
+                # prefix, but without locus_tag in the GBK — so they're absent from lt_map.
+                # When we detect Bakta, pass old_locus_tag_prefix so rename_by_map skips only
+                # foreign-prefix entries; entries that share the old CDS prefix but aren't in
+                # lt_map still raise (real data error).
+                _ffn_old_prefix = (
+                    split_locus_tag(next(iter(lt_map)))[0]
+                    if _annotation_tool == 'bakta' and lt_map
+                    else None
+                )
+                for _fasta_pattern, _label, _old_prefix in (
+                    ('*.faa', 'FAA', None),
+                    ('*.ffn', 'FFN', _ffn_old_prefix),
+                ):
                     for _fasta_name in glob(_fasta_pattern):
                         _fasta = FastaFile(os.path.join(work_dir, _fasta_name))
                         _tmp = _fasta.path + '.renaming'
-                        _fasta.rename_by_map(out=_tmp, lt_map=lt_map, update_path=False)
+                        _fasta.rename_by_map(out=_tmp, lt_map=lt_map, update_path=False, old_locus_tag_prefix=_old_prefix)
                         os.replace(_tmp, _fasta.path)
                         logging.info(f'Renamed locus tags in provided {_label}: {_fasta_name}')
 
@@ -535,7 +556,7 @@ def import_genome(
                 os.replace(tmp_ca, _ca.path)
                 logging.info(f'Renamed locus tags in custom annotation: {_ca.path}')
 
-        fna = import_settings.find_file('fna', root_dir=work_dir, as_class=FastaFile, expected=False)
+        fna = import_settings.find_file('fna', root_dir=work_dir, as_class=FastaFile, expected=False, prefer=base)
         if fna is None:
             logging.info('Generating .fna from .gbk.')
             fna_path = os.path.join(work_dir, base + '.fna')
@@ -547,14 +568,14 @@ def import_genome(
         gbk.create_gff(gff=gff_path)
         gff = GffFile(gff_path)
 
-        ffn = import_settings.find_file('ffn', root_dir=work_dir, as_class=FastaFile, expected=False)
+        ffn = import_settings.find_file('ffn', root_dir=work_dir, as_class=FastaFile, expected=False, prefer=base)
         if ffn is None:
             logging.info('Generating .ffn from .gbk.')
             ffn_path = os.path.join(work_dir, base + '.ffn')
             gbk.create_ffn(ffn=ffn_path)
             ffn = FastaFile(ffn_path)
 
-        faa = import_settings.find_file('faa', root_dir=work_dir, as_class=FastaFile, expected=False)
+        faa = import_settings.find_file('faa', root_dir=work_dir, as_class=FastaFile, expected=False, prefer=base)
         if faa is None:
             logging.info('Generating .faa from .gbk.')
             faa_path = os.path.join(work_dir, base + '.faa')

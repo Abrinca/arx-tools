@@ -425,6 +425,18 @@ class GenBankFile(GenomeFile):
                                 f'expected format {locus_tag_prefix!r}_[0-9]+.'
                             )
 
+    def detect_annotation_tool(self) -> str | None:
+        """Return the annotation tool name ('bakta', 'prokka', 'PGAP') or None if unrecognised."""
+        rec, _ = self._get_first_gbk_rec_feature(gbk=self.path)
+        comment = rec.annotations.get('comment', '')
+        if 'Bakta' in comment:
+            return 'bakta'
+        if 'prokka' in comment.lower():
+            return 'prokka'
+        if 'PGAP' in comment:
+            return 'PGAP'
+        return None
+
     def metadata(self) -> (dict, dict):
         organism_data, genome_data = {}, {}
 

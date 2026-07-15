@@ -218,6 +218,73 @@ def _promote_v3_files(v3_to_orig: dict, genome_dir: str, genome_id: str,
     return archive_path
 
 
+_GC_ORIGINAL_REGEX = r"^[0-9a-zA-Z\_\/\-\ \']{3,11}$"
+_GC_NEW_REGEX      = r"^GC:[0-9a-zA-Z\_\/\-\ \']{3,11}$"
+_GP_ORIGINAL_REGEX = r"^.*$"
+_GP_NEW_REGEX      = r"^GP:.*$"
+
+
+def _update_annotations_json(folder_structure_dir: str) -> None:
+    path = os.path.join(folder_structure_dir, 'annotations.json')
+    with open(path) as f:
+        data = json.load(f)
+
+    def _update_regex(anno_type, original, new):
+        entry = data.get(anno_type)
+        if entry is None:
+            return
+        current = entry.get('regex', '')
+        if current == new:
+            print(f'{anno_type}: regex already updated, skipping')
+        elif current == original:
+            entry['regex'] = new
+            print(f'{anno_type}: regex updated to require {anno_type}: prefix')
+        else:
+            raise ValueError(
+                f'\n{"=" * 60}\n'
+                f'UNEXPECTED regex for {anno_type} in annotations.json:\n'
+                f'  Found:    {current!r}\n'
+                f'  Expected: {original!r}  (original, will be updated)\n'
+                f'          or {new!r}  (already updated)\n'
+                f'Manual intervention required.\n'
+                f'{"=" * 60}'
+            )
+
+    # Correct final URLs keyed by (anno_type, hyperlink name)
+    _CORRECT_URLS = {
+        ('GC', 'Uniprot'): "https://www.uniprot.org/uniprotkb?query=(gene%3A${annotation.replace('GC:', '')})",
+        ('GP', 'Uniprot'): "https://www.uniprot.org/uniprotkb?query=(name%3A${annotation.replace('GP:', '')})",
+        ('GP', 'PubMed'):  "https://pubmed.ncbi.nlm.nih.gov/?term=${annotation.replace('GP:', '')}",
+        ('EP', 'Uniprot'): 'https://www.uniprot.org/uniprotkb?query=(gene%3A${annotation.substring(3)})',
+        ('ED', 'Uniprot'): 'https://www.uniprot.org/uniprotkb?query=(name%3A${annotation.substring(3)})',
+        ('ED', 'PubMed'):  'https://pubmed.ncbi.nlm.nih.gov/?term=${annotation.substring(3)}',
+    }
+
+    def _update_urls(anno_type):
+        entry = data.get(anno_type)
+        if entry is None:
+            return
+        for hyperlink in entry.get('hyperlinks', []):
+            correct = _CORRECT_URLS.get((anno_type, hyperlink.get('name', '')))
+            if correct is None:
+                continue
+            if hyperlink['url'] == correct:
+                pass  # already correct
+            else:
+                hyperlink['url'] = correct
+                print(f'{anno_type}: fixed URL for "{hyperlink["name"]}"')
+
+    _update_regex('GC', _GC_ORIGINAL_REGEX, _GC_NEW_REGEX)
+    _update_regex('GP', _GP_ORIGINAL_REGEX, _GP_NEW_REGEX)
+    _update_urls('GC')
+    _update_urls('GP')
+    _update_urls('EP')
+    _update_urls('ED')
+
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
+
+
 def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_format: str = '_scf{n}',
                 create_from_file: bool = False, create_only: bool = False, promote: bool = False):
     """
@@ -246,15 +313,19 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
     warnings.filterwarnings('ignore', message='.*Premature end of file.*', module='Bio')
     warnings.filterwarnings('ignore', message='.*Expected sequence length.*', module='Bio')
 
+    annotation_actions = [
+        'update GC/GP regex in annotations.json to require GC:/GP: prefix',
+        'fix GC/GP/EP/ED hyperlink URLs in annotations.json (correct UniProt domain + strip type prefix)',
+    ]
     if create_only:
-        actions = [
+        actions = annotation_actions + [
             'shallow-check each genome; skip if already v3',
             'generate .v3 for gbk and assembly fna (contig IDs only)',
             '(.arx.gff will be generated from updated GBK on --promote)',
             '(promotion skipped; re-run with --promote to archive originals and promote)',
         ]
     elif promote:
-        actions = [
+        actions = annotation_actions + [
             'shallow-check each genome; skip if already v3 or no pending .v3 files',
             'archive originals into {genome_id}_v2_backup.tar.gz and promote pending .v3 files',
             'generate .arx.gff from promoted GBK; update genome.json',
@@ -262,7 +333,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             'delete BLAST databases (rebuild manually in arx when needed)',
         ]
     elif create_from_file:
-        actions = [
+        actions = annotation_actions + [
             'shallow-check each genome; skip if already v3',
             'generate .v3 for gbk and assembly fna (contig IDs only)',
             'archive originals and regenerate faa/ffn from updated GBK',
@@ -271,7 +342,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             'delete BLAST databases (rebuild manually in arx when needed)',
         ]
     else:
-        actions = [
+        actions = annotation_actions + [
             'shallow-check each genome; skip if already v3',
             'generate .v3 for gbk and assembly fna (contig IDs only)',
             'archive originals into {genome_id}_v2_backup.tar.gz and promote .v3 files',
@@ -280,6 +351,8 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
             'delete BLAST databases (rebuild manually in arx when needed)',
         ]
     ask(v_from=2, v_to=3, actions=actions, folder_structure_dir=folder_structure_dir)
+
+    _update_annotations_json(folder_structure_dir)
 
     succeeded = 0
     skipped_not_ready = 0   # --promote: genomes still v2 with no pending .v3 files

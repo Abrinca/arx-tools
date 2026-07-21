@@ -407,7 +407,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
                 gff_arx = os.path.splitext(gbk_path_p)[0] + '.arx.gff'
                 GenBankFile(gbk_path_p).create_gff(gff_arx)
                 print(f'{genome_id}: generated {os.path.basename(gff_arx)}')
-                genome_json['cds_tool_gff_file'] = os.path.basename(gff_arx)
+                genome_json['cds_tool_gff_file'] = os.path.relpath(gff_arx, genome.path)
                 with open(os.path.join(genome.path, 'genome.json'), 'w') as _f:
                     json.dump(genome_json, _f, indent=4)
 
@@ -533,7 +533,7 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
         gff_arx = gbk_stem + '.arx.gff'
         GenBankFile(gbk_path).create_gff(gff_arx)
         print(f'{genome_id}: generated {os.path.basename(gff_arx)}')
-        genome_json['cds_tool_gff_file'] = os.path.basename(gff_arx)
+        genome_json['cds_tool_gff_file'] = os.path.relpath(gff_arx, genome.path)
         with open(os.path.join(genome.path, 'genome.json'), 'w') as _f:
             json.dump(genome_json, _f, indent=4)
 

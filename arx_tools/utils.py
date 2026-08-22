@@ -18,7 +18,8 @@ PACKAGE_ROOT = os.path.dirname(__file__)
 
 ANNOTATIONS_JSON = f'{PACKAGE_ROOT}/data/annotations.json'
 COG_CATEGORIES_JSON = f'{PACKAGE_ROOT}/data/COG_categories.json'
-for f in [ANNOTATIONS_JSON, COG_CATEGORIES_JSON]:
+COG_ID_TO_CATEGORY_JSON = f'{PACKAGE_ROOT}/data/COG_id_to_category.json'
+for f in [ANNOTATIONS_JSON, COG_CATEGORIES_JSON, COG_ID_TO_CATEGORY_JSON]:
     assert os.path.isfile(f), f'Package is poorly configured: file is missing: {f}'
 
 
@@ -177,6 +178,36 @@ def get_cog_categories(reload: bool = False) -> dict:
             json.dump(cog_categories, f, indent=4)
 
         return cog_categories
+
+
+def get_cog_id_to_category(reload: bool = False) -> dict:
+    """
+    Maps COG group IDs (e.g. 'COG0842') to their functional category letter(s) (e.g. 'V').
+    Needed because eggnog-mapper v3 reports the COG group ID instead of the category
+    letter(s) directly; older versions reported the category letter(s) directly.
+    """
+    file = f'{PACKAGE_ROOT}/data/COG_id_to_category.json'
+
+    if not reload and os.path.isfile(file):
+        with open(file) as f:
+            return json.load(f)
+
+    else:
+        from urllib import request
+        with request.urlopen('https://ftp.ncbi.nih.gov/pub/COG/COG2024/data/cog-24.def.tab') as f:
+            content = f.read().decode('utf-8').strip()
+
+        cog_id_to_category = {}
+        for line in content.split('\n'):
+            fields = line.split('\t')
+            cog_id, category = fields[0], fields[1]
+            if category:  # a handful of COGs have no assigned category
+                cog_id_to_category[cog_id] = category
+
+        with open(file, 'w') as f:
+            json.dump(cog_id_to_category, f, indent=4)
+
+        return cog_id_to_category
 
 
 def _get_cache_json(cache_file: str) -> dict:

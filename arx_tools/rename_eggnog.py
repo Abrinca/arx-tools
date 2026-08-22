@@ -3,14 +3,20 @@ from re import compile
 from datetime import datetime
 from functools import cached_property
 
-from .utils import GenomeFile, split_locus_tag, clean_locus_tag, get_cog_categories
+from .utils import GenomeFile, split_locus_tag, clean_locus_tag, get_cog_categories, get_cog_id_to_category
 
 EGGNOG_VERSIONS = {
+    'eggnog-3.0.0':
+        '#query\tseed_ortholog\tevalue\tscore\teggNOG_OGs\ttax_ceiling\tfarthest_donor_lineage\tCOG_category\tPreferred_name\tGOs\tEC\tKEGG_ko\tKEGG_Pathway\tKEGG_Module\tKEGG_Reaction\tKEGG_rclass\tBRITE\tKEGG_TC\tCAZy\tBiGG_Reaction\tPFAMs\tannotation_confidence\n',
     'eggnog-2.1.2':
         '#query\tseed_ortholog\tevalue\tscore\teggNOG_OGs\tmax_annot_lvl\tCOG_category\tDescription\tPreferred_name\tGOs\tEC\tKEGG_ko\tKEGG_Pathway\tKEGG_Module\tKEGG_Reaction\tKEGG_rclass\tBRITE\tKEGG_TC\tCAZy\tBiGG_Reaction\tPFAMs\n',
     'eggnog':
         '#query_name\tseed_eggNOG_ortholog\tseed_ortholog_evalue\tseed_ortholog_score\tbest_tax_level\tPreferred_name\tGOs\tEC\tKEGG_ko\tKEGG_Pathway\tKEGG_Module\tKEGG_Reaction\tKEGG_rclass\tBRITE\tKEGG_TC\tCAZy\tBiGG_Reaction\n',
 }
+
+# Upper bound on how many leading comment lines we'll scan for a header match.
+# Guards against reading an entire malformed/corrupt file into memory.
+MAX_HEADER_LINES = 200
 
 
 class EggnogFile(GenomeFile):
@@ -93,8 +99,13 @@ class EggnogFile(GenomeFile):
 
     @cached_property
     def custom_annotation_type(self) -> str:
+        head_lines = []
         with open(self.path) as f:
-            head = '\n'.join(next(f) for x in range(5))  # read 5 lines
+            for line in f:
+                if not line.startswith('#') or len(head_lines) >= MAX_HEADER_LINES:
+                    break
+                head_lines.append(line)
+        head = ''.join(head_lines)
 
         for type, columns_header in EGGNOG_VERSIONS.items():
             if columns_header in head:
@@ -128,12 +139,19 @@ class EggnogFile(GenomeFile):
 
     def cog_categories(self) -> dict:
         cog_categories = get_cog_categories()
+        cog_id_to_category = get_cog_id_to_category()
 
         re_categories = compile(pattern=f"-|[{''.join(cog_categories.keys())}]+")
+        re_cog_ids = compile(pattern=r'COG\d+(,COG\d+)*')
 
         cog_to_count = {cat: 0 for cat in cog_categories.keys()}
         cog_to_count['-'] = 0  # eggnog assigns '-' sometimes; surely it means the same as 'S': Function unknown
         n_genes = 0
+
+        # column position of COG_category varies by eggnog-mapper version; derive it
+        # from the known header rather than hardcoding an index that only fits one version
+        header = EGGNOG_VERSIONS[self.custom_annotation_type].rstrip('\n').split('\t')
+        cog_col = header.index('COG_category')
 
         with open(self.path) as f:
             for line in f:
@@ -141,7 +159,14 @@ class EggnogFile(GenomeFile):
                     continue
                 n_genes += 1
 
-                cog_cats = line.split('\t')[6]
+                cog_cats = line.split('\t')[cog_col]
+
+                if re_cog_ids.fullmatch(cog_cats):
+                    # eggnog-mapper v3 reports the COG group ID (e.g. 'COG0842') instead of
+                    # the category letter(s) directly; resolve it via the NCBI COG table.
+                    cog_cats = ''.join(
+                        cog_id_to_category.get(cog_id, '') for cog_id in cog_cats.split(',')
+                    ) or '-'
 
                 assert re_categories.fullmatch(cog_cats) is not None, f'Failed to interpret "{cog_cats}" as COG categories. {self.path=} {line=}'
 

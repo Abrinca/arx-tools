@@ -224,8 +224,31 @@ def clean_locus_tag(locus_tag: str) -> (str):
 def split_locus_tag(locus_tag: str) -> (str, str):
     locus_tag = clean_locus_tag(locus_tag)
     prefix = locus_tag.rstrip(digits)
-    assert len(prefix) < len(locus_tag), f'Failed to detect {prefix=} from {locus_tag=}. Locus tags must end in digits'
+    if len(prefix) >= len(locus_tag):
+        raise ValueError(f'Failed to detect prefix from {locus_tag!r}: locus tags must end in digits')
     return prefix, locus_tag[len(prefix):]
+
+
+def contig_format_to_regex(contig_format: str) -> str:
+    """Convert a contig_format string like '_scf{n}' to a regex suffix.
+
+    Plain {n} or {n:d} → rejects leading zeros, so '_scf0001' does not match.
+    Zero-padded specs like {n:05d} → accepts any digit string (\\d+).
+    """
+    # Split on {spec} placeholders, capturing the spec content
+    parts = re.split(r'\{([^}]*)\}', contig_format)
+    # parts = [literal0, spec0, literal1, spec1, literal2, ...]
+    result = re.escape(parts[0])
+    for i in range(1, len(parts), 2):
+        spec = parts[i]
+        literal = parts[i + 1] if i + 1 < len(parts) else ''
+        # Zero-padded if spec contains a zero-fill like '0Nd' (e.g. ':05d', ':04d')
+        if re.search(r'0\d*d', spec):
+            result += r'\d+'
+        else:
+            result += r'(?:[1-9]\d*|0)'
+        result += re.escape(literal)
+    return result
 
 
 def create_replace_function(replace_map: {str: str}) -> Callable:
@@ -276,12 +299,12 @@ def get_folder_structure_version(folder_structure_dir: str) -> int:
     :param folder_structure_dir: Path to the root of the OpenGenomeBrowser folder structure. (Must contain 'organisms' folder.)
     :return: version (integer)
     """
-    assert type(folder_structure_dir) is str
+    if not isinstance(folder_structure_dir, str):
+        raise TypeError(f'folder_structure_dir must be str, got {type(folder_structure_dir).__name__}')
     version_file = f'{folder_structure_dir}/version.json'
 
     if not os.path.isfile(version_file):
-        with open(version_file, 'w') as f:
-            json.dump({'folder_structure_version': 1}, f, indent=4)
+        raise FileNotFoundError(f'version.json not found: {version_file}. Initialize the folder structure first.')
 
     try:
         with open(version_file) as f:

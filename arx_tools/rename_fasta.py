@@ -1,6 +1,8 @@
+import os
+import re
 import logging
 
-from .utils import GenomeFile, split_locus_tag
+from .utils import GenomeFile, split_locus_tag, clean_locus_tag, contig_format_to_regex
 
 
 class FastaFile(GenomeFile):
@@ -33,26 +35,117 @@ class FastaFile(GenomeFile):
         if validate:
             self.validate_locus_tags(locus_tag_prefix=new_locus_tag_prefix)
 
+    def rename_by_map(self, out: str, lt_map: dict, update_path: bool = True,
+                      old_locus_tag_prefix: str = None) -> None:
+        skipped = []
+        _skip_seq = False
+        with open(self.path) as f_in, open(out, 'w') as f_out:
+            for line in f_in:
+                if line.startswith('>'):
+                    parts = line[1:].split(None, 1)
+                    bare = clean_locus_tag(parts[0])  # strips gnl|X| prefix if present
+                    if bare not in lt_map:
+                        if old_locus_tag_prefix is not None:
+                            tag_prefix, _ = split_locus_tag(bare)
+                            if tag_prefix != old_locus_tag_prefix:
+                                # Foreign prefix (e.g. Bakta ncRNA with its own random prefix):
+                                # not a CDS, not in the GBK locus_tag namespace — skip.
+                                skipped.append(bare)
+                                _skip_seq = True
+                                continue
+                            raise ValueError(
+                                f'{os.path.basename(self.path)}: locus tag {bare!r} (prefix {old_locus_tag_prefix!r}) '
+                                f'is not present in the GBK. FFN and GBK do not match.'
+                            )
+                        _example_prefix = split_locus_tag(next(iter(lt_map)))[0] if lt_map else '?'
+                        raise ValueError(
+                            f'{os.path.basename(self.path)}: locus tag {bare!r} is not present in the GBK '
+                            f'(GBK uses prefix {_example_prefix!r}). FFN and GBK do not match.'
+                        )
+                    _skip_seq = False
+                    suffix = (' ' + parts[1]) if len(parts) > 1 else '\n'
+                    f_out.write(f'>{lt_map[bare]}{suffix}')
+                elif _skip_seq:
+                    continue
+                else:
+                    f_out.write(line)
+        if skipped:
+            logging.warning(
+                f'{os.path.basename(self.path)}: skipped {len(skipped)} FFN entries not present in the GBK '
+                f'(e.g. Bakta regulatory features): {skipped[:5]}{"..." if len(skipped) > 5 else ""}'
+            )
+        if update_path:
+            self.path = out
+
+    def get_contig_ids(self) -> list[str]:
+        """Return contig IDs (first word of each header line) in order."""
+        ids = []
+        with open(self.path) as f:
+            for line in f:
+                if line.startswith('>'):
+                    ids.append(line[1:].split()[0])
+        return ids
+
+    def rename_contig_ids(self, out: str, new_ids: list[str], update_path: bool = True) -> None:
+        """Replace contig IDs (first word of each header) with new_ids, preserving the rest of each header line."""
+        counter = 0
+        with open(self.path) as f_in, open(out, 'w') as f_out:
+            for line in f_in:
+                if line.startswith('>'):
+                    parts = line[1:].split(None, 1)
+                    suffix = (' ' + parts[1]) if len(parts) > 1 else '\n'
+                    f_out.write(f'>{new_ids[counter]}{suffix}')
+                    counter += 1
+                else:
+                    f_out.write(line)
+        assert counter == len(new_ids), \
+            f'Expected {len(new_ids)} contigs in {self.path}, found {counter}'
+        if update_path:
+            self.path = out
+
+    def validate_contig_ids(self, genome_id: str, contig_format: str = '_scf{n}') -> None:
+        """Check that all contig IDs match {genome_id}{contig_format}. Raise ValueError if not."""
+        pattern = re.compile(rf'^{re.escape(genome_id)}{contig_format_to_regex(contig_format)}$')
+        for contig_id in self.get_contig_ids():
+            if not pattern.match(contig_id):
+                raise ValueError(
+                    f'Contig ID {contig_id!r} in {os.path.basename(self.path)!r} does not match '
+                    f'expected format {genome_id!r} + {contig_format!r} '
+                    f'(e.g. {genome_id!r}_scf1). '
+                    f'Use rename mode to normalize (--rename on CLI, '
+                    f'"Rename locus tags and contig IDs" in web UI).'
+                )
+
     def detect_locus_tag_prefix(self) -> str:
         with open(self.path) as f:
             for line in f:
                 if not line.startswith('>'):
-                    assert line.strip() == '', f'Could not extract locus_tag from {self.path=}, it does not start with a header line!'
+                    assert line.strip() == '', \
+                        f'Could not extract locus_tag from {os.path.basename(self.path)!r}: does not start with a header line!'
                     continue
                 locus_tag_prefix, gene_id = self.parse_fasta_header(line)
                 return locus_tag_prefix
 
         raise KeyError(
-            f'Could not extract locus_tag from {self.path=}, it does not appear to contain a header line (>)!')
+            f'Could not extract locus_tag from {os.path.basename(self.path)!r}: no header line (>) found!')
 
     def validate_locus_tags(self, locus_tag_prefix: str = None):
         with open(self.path) as f:
             for line in f:
                 if line.startswith('>'):
                     real_locus_tag_prefix, gene_id = self.parse_fasta_header(header=line)
-                assert real_locus_tag_prefix == locus_tag_prefix, \
-                    f'locus_tag_prefix in {self.path=} does not match. expected: {locus_tag_prefix} reality: {real_locus_tag_prefix}'
-                assert gene_id.isdigit(), f'locus_tag in {self.path=} is malformed. gene_id is expected to be: [0-9]+ reality: {gene_id}'
+                    if real_locus_tag_prefix != locus_tag_prefix:
+                        raise ValueError(
+                            f'Locus tag prefix in {os.path.basename(self.path)!r} does not match: '
+                            f'expected {locus_tag_prefix!r}, found {real_locus_tag_prefix!r}. '
+                            f'Use rename mode to normalize (--rename on CLI, '
+                            f'"Rename locus tags and contig IDs" in web UI).'
+                        )
+                    if not gene_id.isdigit():
+                        raise ValueError(
+                            f'Malformed locus tag in {os.path.basename(self.path)!r}: '
+                            f'expected {locus_tag_prefix!r}_[0-9]+, found gene ID {gene_id!r}.'
+                        )
 
     @staticmethod
     def parse_fasta_header(header: str) -> (str, str):

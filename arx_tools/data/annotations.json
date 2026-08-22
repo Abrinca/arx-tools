@@ -64,26 +64,26 @@
   "GC": {
     "name": "Gene Code",
     "color": "rgb(204,235,197)",
-    "regex": "^[0-9a-zA-Z\\_\\/\\-\\ \\']{3,11}$",
+    "regex": "^GC:[0-9a-zA-Z\\_\\/\\-\\ \\']{3,11}$",
     "hyperlinks": [
       {
         "name": "Uniprot",
-        "url": "https://www.uniprot.org/uniprotkb?query=(gene%5C%3A${annotation})"
+        "url": "https://www.uniprot.org/uniprotkb?query=(gene%3A${annotation.replace('GC:', '')})"
       }
     ]
   },
   "GP": {
     "name": "Gene Product",
     "color": "rgb(255,163,254)",
-    "regex": "^.*$",
+    "regex": "^GP:.*$",
     "hyperlinks": [
       {
         "name": "Uniprot",
-        "url": "https://www.uniprot.org/uniprotkb?query=(name%5C%3A${annotation})"
+        "url": "https://www.uniprot.org/uniprotkb?query=(name%3A${annotation.replace('GP:', '')})"
       },
       {
         "name": "PubMed",
-        "url": "https://pubmed.ncbi.nlm.nih.gov/?term=${annotation}"
+        "url": "https://pubmed.ncbi.nlm.nih.gov/?term=${annotation.replace('GP:', '')}"
       }
     ]
   },
@@ -94,7 +94,7 @@
     "hyperlinks": [
       {
         "name": "Uniprot",
-        "url": "https://www.uniprot.org/uniprotkb?query=(gene%5C%3A${annotation.substring(3)})"
+        "url": "https://www.uniprot.org/uniprotkb?query=(gene%3A${annotation.substring(3)})"
       }
     ]
   },
@@ -116,7 +116,7 @@
     "hyperlinks": [
       {
         "name": "Uniprot",
-        "url": "https://www.uniprot.org/uniprotkb?query=(name%5C%3A${annotation.substring(3)})"
+        "url": "https://www.uniprot.org/uniprotkb?query=(name%3A${annotation.substring(3)})"
       },
       {
         "name": "PubMed",

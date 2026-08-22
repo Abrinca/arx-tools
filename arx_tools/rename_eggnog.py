@@ -3,7 +3,7 @@ from re import compile
 from datetime import datetime
 from functools import cached_property
 
-from .utils import GenomeFile, split_locus_tag, get_cog_categories
+from .utils import GenomeFile, split_locus_tag, clean_locus_tag, get_cog_categories
 
 EGGNOG_VERSIONS = {
     'eggnog-2.1.2':
@@ -48,6 +48,21 @@ class EggnogFile(GenomeFile):
         if validate:
             self.validate_locus_tags(locus_tag_prefix=new_locus_tag_prefix)
 
+    def rename_by_map(self, out: str, lt_map: dict, update_path: bool = True) -> None:
+        with open(self.path) as f_in, open(out, 'w') as f_out:
+            for line in f_in:
+                if line.startswith('#') or line.strip() == '':
+                    f_out.write(line)
+                    continue
+                locus_tag, rest = line.split('\t', 1)
+                bare = clean_locus_tag(locus_tag)
+                assert bare in lt_map, \
+                    f'Locus tag {locus_tag!r} not found in lt_map. {self.path=}'
+                prefix = locus_tag[: len(locus_tag) - len(bare)]
+                f_out.write(prefix + lt_map[bare] + '\t' + rest)
+        if update_path:
+            self.path = out
+
     def detect_locus_tag_prefix(self) -> str:
         with open(self.path) as f:
             for line in f:
@@ -85,7 +100,15 @@ class EggnogFile(GenomeFile):
             if columns_header in head:
                 return type
 
-        raise KeyError(f'Could not discover eggnog type! {self.path=}')
+        expected = '\n'.join(
+            f'  {t}:\n    {h.strip()}'
+            for t, h in EGGNOG_VERSIONS.items()
+        )
+        raise ValueError(
+            f'Unrecognised eggNOG file format: {self.path!r}\n'
+            f'Expected one of these header lines:\n{expected}\n'
+            f'Got (first 5 lines):\n{head.strip()}'
+        )
 
     def validate_locus_tags(self, locus_tag_prefix: str = None):
         if locus_tag_prefix is None:

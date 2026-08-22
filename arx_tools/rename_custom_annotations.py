@@ -1,4 +1,4 @@
-from .utils import GenomeFile, split_locus_tag
+from .utils import GenomeFile, split_locus_tag, clean_locus_tag
 
 
 class CustomAnnotationFile(GenomeFile):
@@ -38,6 +38,21 @@ class CustomAnnotationFile(GenomeFile):
 
         if validate:
             self.validate_locus_tags(locus_tag_prefix=new_locus_tag_prefix)
+
+    def rename_by_map(self, out: str, lt_map: dict, update_path: bool = True) -> None:
+        with open(self.path) as f_in, open(out, 'w') as f_out:
+            for line in f_in:
+                if line.startswith('#') or not line.strip():
+                    f_out.write(line)
+                    continue
+                locus_tag, rest = line.split('\t', 1)
+                bare = clean_locus_tag(locus_tag)
+                assert bare in lt_map, \
+                    f'Locus tag {locus_tag!r} not found in lt_map. {self.path=}'
+                prefix = locus_tag[: len(locus_tag) - len(bare)]
+                f_out.write(prefix + lt_map[bare] + '\t' + rest)
+        if update_path:
+            self.path = out
 
     def detect_locus_tag_prefix(self) -> str:
         with open(self.path) as f:

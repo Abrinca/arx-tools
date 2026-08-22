@@ -288,10 +288,10 @@ def load_cog_metadata(custom_annotations: [GenomeFile]) -> dict:
     return {}  # not eggnog file
 
 
-def add_files_to_json(genome_json: dict, files: dict, custom_annotations) -> dict:
+def add_files_to_json(genome_json: dict, files: dict, custom_annotations, root_dir: str) -> dict:
     def relname(key):
         file = files[key]
-        return None if file is None else os.path.basename(file.path)
+        return None if file is None else os.path.relpath(file.path, root_dir)
 
     genome_json['cds_tool_faa_file'] = relname('faa')
     genome_json['cds_tool_ffn_file'] = relname('ffn')
@@ -300,7 +300,7 @@ def add_files_to_json(genome_json: dict, files: dict, custom_annotations) -> dic
     genome_json['cds_tool_sqn_file'] = relname('sqn')
     genome_json['assembly_fasta_file'] = relname('fna')
     genome_json['custom_annotations'] = [
-        {'date': ca.date_str(), 'file': os.path.basename(ca.path), 'type': ca.custom_annotation_type}
+        {'date': ca.date_str(), 'file': os.path.relpath(ca.path, root_dir), 'type': ca.custom_annotation_type}
         for ca in custom_annotations
     ]
     return genome_json
@@ -362,7 +362,7 @@ def gather_metadata(import_settings: ImportSettings, root_dir: str, files: [Geno
     genome_json['identifier'] = genome
 
     # add files
-    genome_json = add_files_to_json(genome_json, files, custom_annotations)
+    genome_json = add_files_to_json(genome_json, files, custom_annotations, root_dir)
 
     # validate metadata files
     try:

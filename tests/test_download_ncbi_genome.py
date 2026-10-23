@@ -16,6 +16,7 @@ DOWNLOAD_DIR = f'{ROOT}/test-data/ncbi-download'
 CONVERT_DIR = f'{ROOT}/test-data/ncbi-convert'
 
 assert os.path.isdir(FOLDER_STRUCTURE)
+os.makedirs(CONVERT_DIR, exist_ok=True)
 
 
 def remove_if_exists(file: str):
@@ -101,7 +102,7 @@ class Test(TestCase):
             download_ncbi_genome(assembly_name='AF036485.1', new_locus_tag_prefix='AF036485.2_', out_dir=DOWNLOAD_DIR)
 
     def test_download_O_1(self):
-        cleanup(get_paths(dir=DOWNLOAD_DIR, prefix='O_1_'))
+        cleanup(get_paths(dir=DOWNLOAD_DIR, prefix='GCA_900183865.1'))
         fna, gbk, gff = download_ncbi_fna_gbk_gff(assembly_name='GCA_900183865.1', out_dir=DOWNLOAD_DIR)
         for file in (fna, gbk, gff):
             self.assertTrue(os.path.isfile(file), f'Expected outfile does not exist: {file=}')
@@ -120,11 +121,12 @@ class Test(TestCase):
         )
 
     def test_download_1708(self):
-        cleanup(get_paths(dir=DOWNLOAD_DIR, prefix='1708_'))
+        cleanup(get_paths(dir=DOWNLOAD_DIR, prefix='GCA_020743785.1'))
         fna, gbk, gff = download_ncbi_fna_gbk_gff(assembly_name='GCA_020743785.1', out_dir=DOWNLOAD_DIR)
         for file in (fna, gbk, gff):
             self.assertTrue(os.path.isfile(file), f'Expected outfile does not exist: {file=}')
 
     def test_download_and_rename_GCA_002994165(self):
         # has no record IDs
+        cleanup(get_paths(dir=DOWNLOAD_DIR, prefix='33'))
         download_ncbi_genome(assembly_name='GCA_002994165.1', new_locus_tag_prefix='33_', out_dir=DOWNLOAD_DIR)

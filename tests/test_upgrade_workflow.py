@@ -23,7 +23,7 @@ from arx_tools.update_folder_structure import (
 from arx_tools.check_v3 import check_genome_v3
 from arx_tools.rename_genbank import GenBankFile
 
-from helpers import GENOME_ID, _write_gbk, _write_fna, _write_annotation
+from helpers import GENOME_ID, _write_gbk, _write_fna, _write_annotation, _write_v2_fs_files
 
 
 # ── _promote_v3_files ─────────────────────────────────────────────────────────
@@ -310,8 +310,7 @@ class TestFullUpgradeFlow(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             genome_dir = self._setup_v2_genome(tmp)
 
-            with open(os.path.join(tmp, 'version.json'), 'w') as f:
-                json.dump({'folder_structure_version': 2}, f)
+            _write_v2_fs_files(tmp)
 
             gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
             original_gbk = open(gbk_path).read()
@@ -339,8 +338,7 @@ class TestFullUpgradeFlow(TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             genome_dir = self._setup_v2_genome(tmp)
-            with open(os.path.join(tmp, 'version.json'), 'w') as f:
-                json.dump({'folder_structure_version': 2}, f)
+            _write_v2_fs_files(tmp)
 
             gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
             fna_path = os.path.join(genome_dir, f'{GENOME_ID}.fna')
@@ -386,8 +384,7 @@ class TestFrom2To3SkipPaths(TestCase):
         }
         with open(os.path.join(genome_dir, 'genome.json'), 'w') as f:
             json.dump(genome_json, f)
-        with open(os.path.join(tmp, 'version.json'), 'w') as f:
-            json.dump({'folder_structure_version': 2}, f)
+        _write_v2_fs_files(tmp)
         return genome_dir
 
     def _run(self, tmp: str) -> None:
@@ -465,8 +462,7 @@ class TestVersionBumpBehavior(TestCase):
         }
         with open(os.path.join(genome_dir, 'genome.json'), 'w') as f:
             json.dump(genome_json, f)
-        with open(os.path.join(tmp, 'version.json'), 'w') as f:
-            json.dump({'folder_structure_version': 2}, f)
+        _write_v2_fs_files(tmp)
         return genome_dir
 
     def test_version_not_bumped_when_genome_fails(self):
@@ -528,8 +524,7 @@ class TestCreateOnlyAndPromote(TestCase):
         }
         with open(os.path.join(genome_dir, 'genome.json'), 'w') as f:
             json.dump(genome_json, f)
-        with open(os.path.join(tmp, 'version.json'), 'w') as f:
-            json.dump({'folder_structure_version': 2}, f)
+        _write_v2_fs_files(tmp)
         return genome_dir
 
     def _run(self, tmp: str, **kwargs) -> None:
@@ -604,13 +599,18 @@ class TestCreateOnlyAndPromote(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             genome_dir = self._setup_fs(tmp)
             gbk_path = os.path.join(genome_dir, f'{GENOME_ID}.gbk')
-            with open(gbk_path + '.v3', 'w') as f:
-                f.write('v3 content')
+            fna_path = os.path.join(genome_dir, f'{GENOME_ID}.fna')
+            # pending .v3 files as left by --create_only (v3 contig IDs, so the post-check passes)
+            _write_gbk(gbk_path + '.v3', [(f'{GENOME_ID}_scf1', [f'{GENOME_ID}_000001', f'{GENOME_ID}_000002'])])
+            _write_fna(fna_path + '.v3', [f'{GENOME_ID}_scf1'])
+            with open(gbk_path + '.v3') as f:
+                gbk_v3_content = f.read()
             with patch.object(GenBankFile, 'create_gff'):
                 self._run(tmp, promote=True)
             self.assertFalse(os.path.exists(gbk_path + '.v3'))
+            self.assertFalse(os.path.exists(fna_path + '.v3'))
             with open(gbk_path) as f:
-                self.assertEqual(f.read(), 'v3 content')
+                self.assertEqual(f.read(), gbk_v3_content)
             self.assertTrue(os.path.exists(
                 os.path.join(genome_dir, f'{GENOME_ID}_v2_backup.tar.gz')))
 

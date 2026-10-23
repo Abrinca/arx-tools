@@ -68,3 +68,11 @@ def _setup_v2_genome(genome_dir: str) -> None:
     }
     with open(os.path.join(genome_dir, 'genome.json'), 'w') as f:
         json.dump(genome_json, f)
+
+
+def _write_v2_fs_files(folder_structure_dir: str) -> None:
+    """Write the folder-structure-level files from_2_to_3 expects: version.json (v2) and annotations.json."""
+    with open(os.path.join(folder_structure_dir, 'version.json'), 'w') as f:
+        json.dump({'folder_structure_version': 2}, f)
+    with open(os.path.join(folder_structure_dir, 'annotations.json'), 'w') as f:
+        json.dump({}, f)

@@ -5,6 +5,7 @@ import logging
 import shutil
 import tarfile
 import warnings
+from collections import Counter
 
 from .check_v3 import check_genome_v3, seq_file_has_non_v3_locus_tags
 from .folder_looper import FolderLooper, FolderGenome
@@ -494,14 +495,17 @@ def from_2_to_3(folder_structure_dir: str = None, skip_ignored=False, contig_for
 
 
         except Exception as e:
+            # originals are untouched at this point: remove partial .v3 files and continue with the next genome
             for v3_path in v3_created:
                 try:
                     os.unlink(v3_path)
                 except OSError:
                     pass
             if not isinstance(e, ValueError):
-                logging.error('Unexpected error processing %s (%s)', genome_id, genome.path)
-            raise
+                logging.exception('Unexpected error processing %s (%s)', genome_id, genome.path)
+            print(f'{genome_id}: SKIP: {type(e).__name__}: {e}')
+            skipped_errors += 1
+            continue
 
         # create_only: stop here; .v3 files are on disk, originals untouched.
         if create_only:
@@ -627,89 +631,156 @@ def _gbk_to_assembly(gbk_path: str, fna_path: str) -> tuple[int, str]:
     return len(records), backup
 
 
-def check_assembly_compatibility(folder_structure_dir: str = None, skip_ignored: bool = False) -> None:
+def _contig_ids_match(gbk_ids: list[str], fna_ids: list[str]) -> bool:
+    """True if GBK and FNA have the same unique contig IDs, tolerating gnl|X| prefixes and version suffixes."""
+    if len(gbk_ids) != len(fna_ids) or len(set(gbk_ids)) != len(gbk_ids) or len(set(fna_ids)) != len(fna_ids):
+        return False
+    gbk_id_set, fna_id_set = set(gbk_ids), set(fna_ids)
+    return (fna_id_set == gbk_id_set
+            or {_strip_gnl_prefix(i) for i in fna_id_set} == gbk_id_set
+            or {_strip_version_suffix(i) for i in gbk_id_set} == fna_id_set
+            or gbk_id_set == {_strip_version_suffix(i) for i in fna_id_set})
+
+
+def _gbk_to_assembly_blocker(gbk_path: str, fna_path: str) -> str | None:
+    """
+    Return why the assembly FNA cannot safely be regenerated from the GBK, or None if it can.
+    Regeneration is only safe if it amounts to a pure contig rename:
+    unique GBK contig IDs and identical sequences in the same order.
+    """
+    from Bio import SeqIO
+    from Bio.Seq import UndefinedSequenceError
+    gbk_records = list(SeqIO.parse(gbk_path, 'genbank'))
+    if not gbk_records:
+        return 'GBK contains no records'
+    gbk_ids = [rec.id for rec in gbk_records]
+    duplicates = [contig_id for contig_id, n in Counter(gbk_ids).items() if n > 1]
+    if duplicates:
+        return (f'GBK has duplicate contig IDs ({len(gbk_ids)} records, {len(set(gbk_ids))} unique IDs, '
+                f'e.g. {duplicates[0]!r})')
+    fna_records = list(SeqIO.parse(fna_path, 'fasta'))
+    if len(gbk_records) != len(fna_records):
+        return f'contig counts differ (GBK: {len(gbk_records)}, FNA: {len(fna_records)})'
+    for n, (gbk_rec, fna_rec) in enumerate(zip(gbk_records, fna_records), start=1):
+        try:
+            gbk_seq = str(gbk_rec.seq)
+        except UndefinedSequenceError:
+            return f'GBK record {gbk_rec.id!r} has no sequence'
+        if gbk_seq.upper() != str(fna_rec.seq).upper():
+            return f'sequence of contig #{n} differs between GBK ({gbk_rec.id!r}) and FNA ({fna_rec.id!r})'
+    return None
+
+
+def _ask(prompt: str) -> str:
+    """input() that treats a closed stdin (e.g. `< /dev/null`) as an empty answer, i.e. skip."""
+    try:
+        return input(prompt).strip().lower()
+    except EOFError:
+        print()
+        return ''
+
+
+def _check_genome_assembly(genome: FolderGenome, yes: bool, skip: bool) -> tuple[str, str]:
+    """Check one genome for check_assembly_compatibility. Returns (status, detail)."""
+    genome_id = genome.identifier
+    genome_json = genome.json
+
+    def _skip(reason: str) -> tuple[str, str]:
+        print(f'{genome_id}: SKIP: {reason}')
+        return 'skipped', reason
+
+    gbk_filename = genome_json.get('cds_tool_gbk_file')
+    if not gbk_filename:
+        return _skip('no cds_tool_gbk_file in genome.json')
+    gbk_path = os.path.join(genome.path, gbk_filename)
+    if not os.path.exists(gbk_path):
+        return _skip(f'GBK not found: {gbk_path}')
+
+    asm_filename = genome_json.get('assembly_fasta_file')
+    if not asm_filename:
+        return _skip('no assembly_fasta_file in genome.json')
+    fna_path = os.path.join(genome.path, asm_filename)
+    if not os.path.exists(fna_path):
+        return _skip(f'assembly FNA not found: {fna_path}')
+
+    gbk_ids = GenBankFile(gbk_path).get_contig_ids()
+    fna_ids = FastaFile(fna_path).get_contig_ids()
+    if _contig_ids_match(gbk_ids, fna_ids):
+        print(f'{genome_id}: OK')
+        return 'OK', ''
+
+    while not _contig_ids_match(gbk_ids, fna_ids):
+        n_preview = 5
+        print(f'{genome_id}: GBK and assembly contig IDs do not match '
+              f'(GBK: {len(gbk_ids)}, FNA: {len(fna_ids)}).')
+        print(f'  FNA: {fna_path}')
+        print(f'  {"GBK":30s}  {"FNA (current)":30s}')
+        print(f'  {"---":30s}  {"---":30s}')
+        for g, a in zip(gbk_ids[:n_preview], fna_ids[:n_preview]):
+            print(f'  {g:30s}  {a}')
+        if max(len(gbk_ids), len(fna_ids)) > n_preview:
+            print(f'  ... ({max(len(gbk_ids), len(fna_ids)) - n_preview} more)')
+
+        blocker = _gbk_to_assembly_blocker(gbk_path, fna_path)
+        if blocker:
+            print(f'{genome_id}: cannot auto-fix: {blocker}.')
+            prompt = '  Fix manually, then (r)etry, or (s)kip? [r/s] '
+        else:
+            prompt = '  (y) regenerate assembly from GBK, (r) retry after manual fix, (s) skip? [y/r/s] '
+        if yes or skip:
+            response = 'y' if yes and not blocker else 's'
+            print(prompt + response)
+        else:
+            response = _ask(prompt)
+
+        if response == 'y' and not blocker:
+            n, backup = _gbk_to_assembly(gbk_path, fna_path)
+            print(f'{genome_id}: assembly regenerated from GBK ({n} contigs); '
+                  f'original backed up to {os.path.basename(backup)}')
+            detail = f'assembly regenerated from GBK; original backed up to {os.path.basename(backup)}'
+        elif response == 'r':
+            detail = 'fixed manually'
+        else:
+            print(f'{genome_id}: skipped.')
+            return 'incompatible', blocker or 'skipped; assembly can be regenerated from GBK (y / --yes)'
+
+        # re-read both: a manual fix may have touched either file
+        gbk_ids = GenBankFile(gbk_path).get_contig_ids()
+        fna_ids = FastaFile(fna_path).get_contig_ids()
+
+    return 'fixed', detail
+
+
+def check_assembly_compatibility(folder_structure_dir: str = None, skip_ignored: bool = False,
+                                 yes: bool = False, skip: bool = False) -> None:
     """
     Check whether GBK and assembly FNA contig IDs match for each genome.
     Interactively offers to regenerate the assembly FNA from GBK sequences if they don't match.
+    Regeneration is only offered if it is a pure contig rename (unique GBK IDs, identical sequences).
+
+    Use --yes to regenerate every assembly that can safely be regenerated and skip the rest, without prompts.
+    Use --skip to skip every mismatch without prompts (report only, nothing is modified).
     """
+    if yes and skip:
+        raise ValueError('--yes and --skip are mutually exclusive')
     folder_structure_dir = _get_folder_structure_dir(folder_structure_dir)
-    ok = fixed = incompatible = skipped = 0
+    results = {'OK': [], 'fixed': [], 'incompatible': [], 'skipped': [], 'errors': []}
 
     for genome in loop_genomes(folder_structure_dir=folder_structure_dir, skip_ignored=skip_ignored):
-        genome_id = genome.identifier
-        genome_json = genome.json
+        try:
+            status, detail = _check_genome_assembly(genome, yes=yes, skip=skip)
+        except Exception as e:
+            status, detail = 'errors', f'{type(e).__name__}: {e}'
+            print(f'{genome.identifier}: ERROR: {detail}')
+        results[status].append((genome.identifier, detail))
 
-        gbk_filename = genome_json.get('cds_tool_gbk_file')
-        if not gbk_filename:
-            print(f'{genome_id}: SKIP: no cds_tool_gbk_file in genome.json')
-            skipped += 1
+    print('\nSummary: ' + ', '.join(f'{len(entries)} {status}' for status, entries in results.items()))
+    for status, entries in results.items():
+        if status == 'OK' or not entries:
             continue
-        gbk_path = os.path.join(genome.path, gbk_filename)
-        if not os.path.exists(gbk_path):
-            print(f'{genome_id}: SKIP: GBK not found: {gbk_path}')
-            skipped += 1
-            continue
-
-        asm_filename = genome_json.get('assembly_fasta_file')
-        if not asm_filename:
-            print(f'{genome_id}: SKIP: no assembly_fasta_file in genome.json')
-            skipped += 1
-            continue
-        fna_path = os.path.join(genome.path, asm_filename)
-        if not os.path.exists(fna_path):
-            print(f'{genome_id}: SKIP: assembly FNA not found: {fna_path}')
-            skipped += 1
-            continue
-
-        gbk_ids = GenBankFile(gbk_path).get_contig_ids()
-        gbk_id_set = set(gbk_ids)
-
-        fna_ids = FastaFile(fna_path).get_contig_ids()
-        fna_id_set = set(fna_ids)
-
-        if fna_id_set == gbk_id_set:
-            print(f'{genome_id}: OK')
-            ok += 1
-        elif ({_strip_gnl_prefix(i) for i in fna_id_set} == gbk_id_set
-              or {_strip_version_suffix(i) for i in gbk_id_set} == fna_id_set
-              or gbk_id_set == {_strip_version_suffix(i) for i in fna_id_set}):
-            print(f'{genome_id}: OK')
-            ok += 1
-        else:
-            while set(FastaFile(fna_path).get_contig_ids()) != gbk_id_set:
-                fna_ids = FastaFile(fna_path).get_contig_ids()
-                n_preview = 5
-                print(f'{genome_id}: GBK and assembly contig IDs do not match '
-                      f'(GBK: {len(gbk_ids)}, FNA: {len(fna_ids)}).')
-                print(f'  FNA: {fna_path}')
-                print(f'  {"GBK":30s}  {"FNA (current)":30s}')
-                print(f'  {"---":30s}  {"---":30s}')
-                for g, a in zip(gbk_ids[:n_preview], fna_ids[:n_preview]):
-                    print(f'  {g:30s}  {a}')
-                if max(len(gbk_ids), len(fna_ids)) > n_preview:
-                    print(f'  ... ({max(len(gbk_ids), len(fna_ids)) - n_preview} more)')
-                if len(gbk_ids) != len(fna_ids):
-                    print(f'{genome_id}: contig counts differ; cannot auto-fix.')
-                    response = input('  Fix manually, then (r)etry, or (s)kip? [r/s] ').strip().lower()
-                    if response == 'r':
-                        continue
-                    break
-                response = input('  (y) regenerate assembly from GBK, (r) retry after manual fix, (s) skip? [y/r/s] ').strip().lower()
-                if response == 'y':
-                    n, backup = _gbk_to_assembly(gbk_path, fna_path)
-                    print(f'{genome_id}: assembly regenerated from GBK ({n} contigs); '
-                          f'original backed up to {os.path.basename(backup)}')
-                elif response == 'r':
-                    continue
-                else:
-                    print(f'{genome_id}: skipped.')
-                    break
-            if set(FastaFile(fna_path).get_contig_ids()) == gbk_id_set:
-                fixed += 1
-            else:
-                incompatible += 1
-
-    print(f'\nSummary: {ok} OK, {fixed} fixed, {incompatible} incompatible, {skipped} skipped')
+        print(f'\n{status.capitalize()}:')
+        for genome_id, detail in entries:
+            print(f'  {genome_id}: {detail}')
 
 
 

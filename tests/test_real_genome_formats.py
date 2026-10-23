@@ -17,12 +17,10 @@ Four distinct annotation-tool output formats appear in the real data:
     Seqid:    NZ_NLUC01000099.1  (same PGAP code path, NZ_ namespace)
     Locus ID: gene-AS963_RS25430  (RS-style locus tags, same gene- prefix)
 
-  arx in-house / FAM* (FAM20446-i1-1.1)
-    Seqid:    FAM20446-i1-1_scf0001  (old 4-digit scf format → rename only contigs)
-    Locus ID: gene-FAM20446-i1-1.1_000001  (already 6-digit → identity lt_map)
-
-  FAM1079-i1-1.1 (arx_container + arx_container_perf)
-    check_genome_v3 reports NOT v3 for both copies
+  arx in-house / FAM* (FAM1079-i1-1.1, test-data/v2-folder-structure)
+    Seqid:    FAM1079-i1-1_scf0001  (old 4-digit scf format → rename only contigs)
+    Locus ID: FAM1079-i1-1.1_000001  (already 6-digit → identity lt_map)
+    check_genome_v3 reports NOT v3
 
   Bakta (thomas-1.1)
     Seqid:    contig_1  (plain contig ID, direct match in contig_map)
@@ -60,14 +58,10 @@ _PGAP_FNA = os.path.join(_PGAP_DIR, '1_assembly/99.0676_GCA_012488935.1.fna')
 _PGAP_GFF = os.path.join(_PGAP_DIR, '2_cds/99.0676_GCA_012488935.1.gff')
 _PGAP_GENOME_ID = '99.0676_GCA_012488935.1'
 
-_FAM1079_DIR_CONTAINER = (
-    '/data/repos/arx/arx_container/folder_structure'
-    '/organisms/FAM1079/genomes/FAM1079-i1-1.1'
-)
-_FAM1079_DIR_PERF = (
-    '/data/repos/arx/arx_container_perf/folder_structure'
-    '/organisms/FAM1079/genomes/FAM1079-i1-1.1'
-)
+# FAM1079-i1-1.1 as it was before the v3 migration (the arx_container copies have since been migrated)
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_FAM1079_DIR_V2 = f'{_ROOT}/test-data/v2-folder-structure/organisms/FAM1079/genomes/FAM1079-i1-1.1'
+_FAM1079_GBK_V2 = os.path.join(_FAM1079_DIR_V2, 'FAM1079-i1-1.1.gbk')
 _FAM1079_GENOME_ID = 'FAM1079-i1-1.1'
 
 # PGAP GCF / RefSeq :NZ_ contig accessions, RS-style locus tags
@@ -76,16 +70,6 @@ _NZ_DIR = f'{_NZ_BASE}/MOD1-EC5047/genomes/MOD1-EC5047_GCF_002233245.1_ASM223324
 _NZ_GBK = os.path.join(_NZ_DIR, '2_cds/MOD1-EC5047_GCF_002233245.1_ASM223324v1.gbk')
 _NZ_GFF = os.path.join(_NZ_DIR, '2_cds/MOD1-EC5047_GCF_002233245.1_ASM223324v1.gff')
 _NZ_GENOME_ID = 'MOD1-EC5047_GCF_002233245.1_ASM223324v1'
-
-# arx in-house / FAM* :old 4-digit scf contig IDs, already-6-digit locus tags (identity map)
-_FAM20446_DIR = (
-    '/data/repos/arx/arx_container/folder_structure'
-    '/organisms/FAM20446/genomes/FAM20446-i1-1.1'
-)
-_FAM20446_GBK = os.path.join(_FAM20446_DIR, '2_cds/FAM20446-i1-1.1.gbk')
-_FAM20446_GFF = os.path.join(_FAM20446_DIR, '2_cds/FAM20446-i1-1.1.gff')
-_FAM20446_FNA = os.path.join(_FAM20446_DIR, '1_assembly/FAM20446-i1-1.fna')
-_FAM20446_GENOME_ID = 'FAM20446-i1-1.1'
 
 # Bakta :plain contig IDs, bare locus tag feature IDs (no Prokka suffix, no PGAP prefix)
 _BAKTA_DIR = '/home/sandro/Documents/Abrinca/cases/bakta'
@@ -170,32 +154,22 @@ class TestPgapContigRename(unittest.TestCase):
 
 # ── FAM1079 v3 check ───────────────────────────────────────────────────────────
 
-@unittest.skipUnless(os.path.exists(_FAM1079_DIR_CONTAINER), 'FAM1079 arx_container not available')
-class TestFam1079NotV3Container(unittest.TestCase):
-    """FAM1079-i1-1.1 in arx_container is NOT v3 (old contig IDs, old locus tags)."""
+@unittest.skipUnless(os.path.exists(_FAM1079_DIR_V2), 'FAM1079 v2 test data not available')
+class TestFam1079NotV3(unittest.TestCase):
+    """FAM1079-i1-1.1 in the v2 test folder structure is NOT v3 (old 4-digit scf contig IDs)."""
 
     def test_check_genome_v3_reports_not_v3(self):
-        result = check_genome_v3(_FAM1079_DIR_CONTAINER, _FAM1079_GENOME_ID)
+        result = check_genome_v3(_FAM1079_DIR_V2, _FAM1079_GENOME_ID)
         self.assertFalse(result.is_v3,
                          f'Expected NOT v3 but got is_v3=True; issues: {result.issues}')
 
     def test_check_reports_contig_or_locus_issue(self):
-        result = check_genome_v3(_FAM1079_DIR_CONTAINER, _FAM1079_GENOME_ID)
+        result = check_genome_v3(_FAM1079_DIR_V2, _FAM1079_GENOME_ID)
         issue_text = ' '.join(result.issues).lower()
         self.assertTrue(
             'contig' in issue_text or 'locus' in issue_text,
             f'Expected a contig/locus issue but got: {result.issues}',
         )
-
-
-@unittest.skipUnless(os.path.exists(_FAM1079_DIR_PERF), 'FAM1079 arx_container_perf not available')
-class TestFam1079NotV3Perf(unittest.TestCase):
-    """FAM1079-i1-1.1 in arx_container_perf is also NOT v3."""
-
-    def test_check_genome_v3_reports_not_v3(self):
-        result = check_genome_v3(_FAM1079_DIR_PERF, _FAM1079_GENOME_ID)
-        self.assertFalse(result.is_v3,
-                         f'Expected NOT v3 but got is_v3=True; issues: {result.issues}')
 
 
 # ── PGAP GCF / RefSeq (NZ_ accessions, RS-style locus tags) ───────────────────
@@ -237,7 +211,7 @@ class TestPgapNZContigRename(unittest.TestCase):
 
 # ── arx in-house FAM* (identity lt_map, only contig rename) ───────────────────
 
-@unittest.skipUnless(os.path.exists(_FAM20446_GBK), 'FAM20446 genome not available')
+@unittest.skipUnless(os.path.exists(_FAM1079_GBK_V2), 'FAM1079 v2 test data not available')
 class TestFamInHouseContigRename(unittest.TestCase):
     """
     arx in-house FAM* genomes already carry 6-digit locus tags; normalize()
@@ -248,8 +222,8 @@ class TestFamInHouseContigRename(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = self._tmp.name
         out_gbk = os.path.join(self.tmp, 'out.gbk')
-        self.contig_map, self.lt_map = GenBankFile(_FAM20446_GBK).normalize(
-            out=out_gbk, genome_id=_FAM20446_GENOME_ID
+        self.contig_map, self.lt_map = GenBankFile(_FAM1079_GBK_V2).normalize(
+            out=out_gbk, genome_id=_FAM1079_GENOME_ID
         )
 
     def tearDown(self):
@@ -258,7 +232,7 @@ class TestFamInHouseContigRename(unittest.TestCase):
     def test_lt_map_is_identity(self):
         """Locus tags are already v3; every old tag maps to itself."""
         self.assertTrue(all(k == v for k, v in self.lt_map.items()),
-                        'Expected identity lt_map for FAM20446')
+                        'Expected identity lt_map for FAM1079')
 
     def test_contig_map_renames_scf0001_to_scf1(self):
         """Old 4-digit scf IDs are renamed to 1-digit v3 scf IDs."""
@@ -266,7 +240,7 @@ class TestFamInHouseContigRename(unittest.TestCase):
         self.assertGreater(len(old_keys), 0, 'Expected scf0NNN keys in contig_map')
         for old, new in self.contig_map.items():
             self.assertIn('scf0', old, f'Expected old 4-digit scf key: {old}')
-            self.assertRegex(new, rf'^{re.escape(_FAM20446_GENOME_ID)}_scf\d+$')
+            self.assertRegex(new, rf'^{re.escape(_FAM1079_GENOME_ID)}_scf\d+$')
 
 
 # ── Bakta (plain contig IDs, bare locus tag feature IDs) ──────────────────────

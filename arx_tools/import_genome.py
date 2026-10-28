@@ -484,6 +484,10 @@ def import_genome(
         gbk: GenBankFile = import_settings.find_file('gbk', root_dir=work_dir, as_class=GenBankFile)
         base = os.path.splitext(os.path.basename(gbk.path))[0]
 
+        n_self_refs = gbk.strip_self_references()
+        if n_self_refs:
+            logging.info(f'Removed {n_self_refs} self-referencing contig prefixes from feature locations.')
+
         if rename:
             logging.info('Normalizing locus tags and contig IDs.')
 

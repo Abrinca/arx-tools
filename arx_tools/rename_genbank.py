@@ -99,6 +99,58 @@ def _patch_contig_id_lines(lines: list[str], name_map: dict[str, str]) -> list[s
     return out
 
 
+def _strip_self_reference_lines(lines: list[str]) -> tuple[list[str], int]:
+    """
+    Remove self-referencing sequence prefixes from feature locations.
+
+    Some annotation pipelines write locations like 'contig000001:100..200' where
+    the prefix is the record's own LOCUS/ACCESSION/VERSION. BioPython parses the
+    prefix as a reference to another sequence, which breaks feature.extract().
+
+    Returns (lines, number of removed prefixes).
+    """
+    out: list[str] = []
+    names: set[str] = set()
+    pattern = None
+    in_features = in_location = False
+    n_removed = 0
+
+    def strip(location: str) -> str:
+        nonlocal n_removed
+        if pattern is None:
+            return location
+        location, n = pattern.subn('', location)
+        n_removed += n
+        return location
+
+    for line in lines:
+        if line.startswith(('LOCUS', 'ACCESSION', 'VERSION')):
+            if line.startswith('LOCUS'):
+                names = set()
+            tokens = line.split()[1:]
+            if tokens:
+                # LOCUS: name only; ACCESSION: primary only; VERSION: accession.version
+                names.add(tokens[0])
+            pattern = re.compile(rf'(?<![\w.|])(?:{"|".join(map(re.escape, names))}):') if names else None
+        elif line.startswith('FEATURES'):
+            in_features = True
+        elif line.startswith('//') or (in_features and line[:1] not in (' ', '\n')):
+            in_features = in_location = False
+        elif in_features:
+            if line.startswith('     ') and line[5:6] not in (' ', ''):
+                # feature key line: key in columns 6-20, location from column 22
+                in_location = True
+                line = line[:21] + strip(line[21:])
+            elif line.startswith(' ' * 21):
+                if line[21:].startswith('/'):
+                    in_location = False
+                elif in_location:
+                    line = line[:21] + strip(line[21:])
+        out.append(line)
+
+    return out, n_removed
+
+
 def _read_accession_lines(path: str) -> list[str]:
     """Return the raw ACCESSION line (no trailing newline) for each record."""
     results: list[str] = []
@@ -382,6 +434,33 @@ class GenBankFile(GenomeFile):
             f.writelines(patched)
 
         return contig_map, lt_map
+
+    def strip_self_references(self) -> int:
+        """
+        Remove self-referencing contig prefixes from feature locations in-place
+        ('contig1:100..200' in record contig1 -> '100..200').
+
+        Raise ValueError if a feature still references a different sequence.
+        Returns the number of removed prefixes.
+        """
+        with open(self.path) as f:
+            lines = f.readlines()
+        lines, n_removed = _strip_self_reference_lines(lines)
+        if n_removed:
+            with open(self.path, 'w') as f:
+                f.writelines(lines)
+
+        with open(self.path) as f:
+            for rec in SeqIO.parse(f, 'genbank'):
+                for feature in rec.features:
+                    refs = {part.ref for part in feature.location.parts if part.ref}
+                    if refs:
+                        raise ValueError(
+                            f'Feature {feature.type} at {feature.location} in contig {rec.id!r} of '
+                            f'{os.path.basename(self.path)!r} references another sequence ({", ".join(sorted(refs))}). '
+                            f'Features must be located on the contig they belong to.'
+                        )
+        return n_removed
 
     def get_contig_ids(self) -> list[str]:
         with open(self.path) as f:

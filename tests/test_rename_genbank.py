@@ -214,6 +214,42 @@ class Test(TestCase):
                 if os.path.isfile(p):
                     os.remove(p)
 
+    def test_strip_self_references(self):
+        """Locations like 'contig000001:1..9' on their own contig are stripped; others raise."""
+        def write(path, refs):
+            records = []
+            for contig_id, ref in refs:
+                rec = SeqRecord(Seq('ATCGATCGATCG' * 5), id=contig_id, name=contig_id, description='')
+                rec.annotations['molecule_type'] = 'DNA'
+                for i, strand in enumerate((1, -1)):
+                    feat = SeqFeature(FeatureLocation(i * 9, i * 9 + 9, strand=strand, ref=ref), type='CDS')
+                    feat.qualifiers['locus_tag'] = [f'{contig_id}_{i}']
+                    feat.qualifiers['product'] = ['hypothetical protein']
+                    rec.features.append(feat)
+                records.append(rec)
+            with open(path, 'w') as f:
+                SeqIO.write(records, f, 'genbank')
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'self_ref.gbk')
+            write(path, [('contig000001', 'contig000001'), ('contig000002', 'contig000002')])
+            with open(path) as f:
+                self.assertIn('contig000001:1..9', f.read())
+
+            gbk = GenBankFile(path)
+            self.assertEqual(gbk.strip_self_references(), 4)
+            with open(path) as f:
+                for rec in SeqIO.parse(f, 'genbank'):
+                    for feat in rec.features:
+                        self.assertIsNone(feat.location.ref)
+                        self.assertEqual(len(feat.extract(rec.seq)), 9)
+            self.assertEqual(gbk.strip_self_references(), 0)
+
+            path = os.path.join(tmp, 'cross_ref.gbk')
+            write(path, [('contig000001', 'contig000002'), ('contig000002', None)])
+            with self.assertRaises(ValueError):
+                GenBankFile(path).strip_self_references()
+
     @classmethod
     def tearDownClass(cls) -> None:
         cleanup()
